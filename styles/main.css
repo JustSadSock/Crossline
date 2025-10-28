@@ -42,6 +42,128 @@ body {
   opacity: 0.8;
 }
 
+.notifications {
+  position: fixed;
+  top: 2rem;
+  right: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: min(360px, 90vw);
+  z-index: 120;
+  pointer-events: none;
+}
+
+.notification {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  padding: 1rem 1.2rem 1rem 1.6rem;
+  border-radius: 20px;
+  background: rgba(5, 7, 13, 0.86);
+  border: 1px solid rgba(77, 246, 255, 0.28);
+  box-shadow: 0 20px 46px rgba(5, 7, 13, 0.7);
+  backdrop-filter: blur(16px);
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateX(32px) translateY(8px);
+  animation: notification-in 0.32s ease forwards;
+}
+
+.notification::before {
+  content: '';
+  position: absolute;
+  inset: 0.4rem auto 0.4rem 0.4rem;
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+}
+
+.notification[data-state='closing'] {
+  animation: notification-out 0.24s ease forwards;
+}
+
+.notification__icon {
+  font-size: 1.2rem;
+  line-height: 1;
+  margin-top: 0.1rem;
+}
+
+.notification__body {
+  flex: 1;
+  font-size: 0.92rem;
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+}
+
+.notification__close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.25rem;
+  border-radius: 50%;
+  transition: color var(--transition), transform var(--transition);
+}
+
+.notification__close:hover,
+.notification__close:focus {
+  color: var(--accent);
+  transform: scale(1.12);
+}
+
+.notification--success {
+  border-color: rgba(77, 255, 174, 0.48);
+  box-shadow: 0 20px 46px rgba(77, 255, 174, 0.25);
+}
+
+.notification--success::before {
+  background: linear-gradient(180deg, var(--success), rgba(77, 246, 255, 0.8));
+}
+
+.notification--warning {
+  border-color: rgba(255, 191, 77, 0.5);
+  box-shadow: 0 20px 46px rgba(255, 191, 77, 0.2);
+}
+
+.notification--warning::before {
+  background: linear-gradient(180deg, #ffbf4d, #ff784d);
+}
+
+.notification--error {
+  border-color: rgba(255, 77, 122, 0.55);
+  box-shadow: 0 24px 52px rgba(255, 77, 122, 0.32);
+}
+
+.notification--error::before {
+  background: linear-gradient(180deg, #ff4d7a, #ff2cfb);
+}
+
+@keyframes notification-in {
+  from {
+    opacity: 0;
+    transform: translateX(32px) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) translateY(0);
+  }
+}
+
+@keyframes notification-out {
+  from {
+    opacity: 1;
+    transform: translateX(0) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(34px) translateY(-10px);
+  }
+}
+
 .button {
   background: var(--accent);
   border: none;
@@ -321,18 +443,34 @@ body {
 }
 
 .hud {
-  background: rgba(12, 18, 34, 0.78);
+  position: relative;
+  background: linear-gradient(145deg, rgba(12, 18, 34, 0.9), rgba(12, 18, 34, 0.62));
   border-radius: 18px;
   padding: 1rem 1.4rem;
-  border: 1px solid rgba(77, 246, 255, 0.18);
+  border: 1px solid rgba(77, 246, 255, 0.2);
+  box-shadow: 0 18px 42px rgba(5, 7, 13, 0.45), inset 0 0 0 1px rgba(77, 246, 255, 0.05);
   display: flex;
   align-items: center;
   gap: 0.9rem;
   min-height: 68px;
+  overflow: hidden;
 }
 
 .hud--status {
   justify-content: space-between;
+}
+
+.hud::after {
+  content: '';
+  position: absolute;
+  inset: -45% 32%;
+  background: radial-gradient(circle at center, rgba(77, 246, 255, 0.22), transparent 65%);
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.hud:hover::after {
+  opacity: 0.55;
 }
 
 .hud__tag {
@@ -403,21 +541,59 @@ body {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(77, 246, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(77, 246, 255, 0.03);
 }
 
 .game__canvas-wrapper {
   position: relative;
   border-radius: 26px;
   overflow: hidden;
-  border: 1px solid rgba(77, 246, 255, 0.18);
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(77, 246, 255, 0.22);
+  box-shadow: 0 28px 58px rgba(0, 0, 0, 0.55);
+  background: rgba(5, 7, 13, 0.6);
+}
+
+.game__canvas-wrapper::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 28px;
+  background: linear-gradient(120deg, rgba(77, 246, 255, 0.45), rgba(255, 44, 251, 0.32));
+  opacity: 0.6;
+  filter: blur(18px);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.game__canvas-wrapper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(77, 246, 255, 0.18), transparent 65%);
+  opacity: 0;
+  transform: translateX(-60%);
+  animation: canvas-shimmer 8s ease-in-out infinite;
+  mix-blend-mode: screen;
+  z-index: 1;
+  pointer-events: none;
 }
 
 #game-canvas {
+  position: relative;
+  z-index: 2;
   width: 100%;
   height: auto;
   display: block;
-  background: radial-gradient(circle at center, rgba(77, 246, 255, 0.1), rgba(5, 7, 13, 0.9));
+  background:
+    radial-gradient(circle at 18% 22%, rgba(255, 44, 251, 0.16), transparent 55%),
+    radial-gradient(circle at 78% 35%, rgba(77, 246, 255, 0.22), transparent 60%),
+    repeating-linear-gradient(90deg, rgba(77, 246, 255, 0.06) 0 2px, transparent 2px 64px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0 2px, transparent 2px 64px),
+    #04050d;
 }
 
 .overlay {
@@ -431,6 +607,25 @@ body {
   background: rgba(5, 7, 13, 0.76);
   text-align: center;
   backdrop-filter: blur(4px);
+  z-index: 3;
+}
+
+@keyframes canvas-shimmer {
+  0% {
+    opacity: 0;
+    transform: translateX(-60%);
+  }
+  35% {
+    opacity: 0.45;
+  }
+  65% {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(120%);
+  }
 }
 
 .overlay h2 {
@@ -512,6 +707,22 @@ body {
 .mobile-fire:active {
   background: rgba(255, 44, 251, 0.4);
   border-color: rgba(255, 44, 251, 0.7);
+}
+
+@media (max-width: 640px) {
+  .notifications {
+    top: auto;
+    bottom: 1.5rem;
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    align-items: center;
+    width: min(480px, 92vw);
+  }
+
+  .notification {
+    width: 100%;
+  }
 }
 
 @media (max-width: 1100px) {
