@@ -30,6 +30,9 @@ const mobileShield = document.getElementById('mobile-shield');
 const mobileDash = document.getElementById('mobile-dash');
 const moveJoystick = document.getElementById('move-joystick');
 const aimJoystick = document.getElementById('aim-joystick');
+const openControlsBtn = document.getElementById('open-controls');
+const controlsDialog = document.getElementById('controls-dialog');
+const closeControlsBtn = document.getElementById('close-controls');
 const roomTemplate = document.getElementById('room-template');
 const notificationsRoot = document.getElementById('notifications');
 
@@ -56,6 +59,17 @@ const state = {
 };
 
 const dashChargeElements = dashCharges ? Array.from(dashCharges.querySelectorAll('.hud__charge')) : [];
+
+const MOVEMENT_KEY_MAP = {
+  KeyW: 'w',
+  ArrowUp: 'w',
+  KeyS: 's',
+  ArrowDown: 's',
+  KeyA: 'a',
+  ArrowLeft: 'a',
+  KeyD: 'd',
+  ArrowRight: 'd',
+};
 
 function updateShieldUi(ratio, active) {
   if (!shieldFill || !shieldValue) return;
@@ -482,13 +496,65 @@ function resetInputState() {
   centerPointer();
 }
 
+function isTextInput(target) {
+  return target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+}
+
+function updateMovementKeys(event, pressed) {
+  const target = event.target;
+  if (isTextInput(target) && target !== document.body) {
+    return false;
+  }
+  if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
+    return false;
+  }
+  const mapped = MOVEMENT_KEY_MAP[event.code] || null;
+  let handled = false;
+  if (mapped) {
+    handled = true;
+    if (pressed) {
+      inputState.keys.add(mapped);
+    } else {
+      inputState.keys.delete(mapped);
+    }
+  } else {
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    if (['w', 'a', 's', 'd'].includes(key)) {
+      handled = true;
+      if (pressed) {
+        inputState.keys.add(key);
+      } else {
+        inputState.keys.delete(key);
+      }
+    }
+  }
+  if (handled && event.cancelable) {
+    event.preventDefault();
+  }
+  return handled;
+}
+
+function releaseActiveInputs() {
+  inputState.keys.clear();
+  inputState.fire = false;
+  inputState.shield = false;
+  inputState.moveVector.x = 0;
+  inputState.moveVector.y = 0;
+  inputState.aimVector.x = 0;
+  inputState.aimVector.y = 0;
+  inputState.aimVector.active = false;
+}
+
 function attachInputListeners() {
   document.addEventListener('keydown', (event) => {
-    const key = event.key.toLowerCase();
-    if (['w', 'a', 's', 'd'].includes(key)) {
-      inputState.keys.add(key);
+    if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
+      if (event.key === 'Escape') {
+        hideControlsModal();
+      }
+      return;
     }
-    if (event.code === 'Space') {
+    updateMovementKeys(event, true);
+    if (event.code === 'Space' && !isTextInput(event.target)) {
       event.preventDefault();
       if (!event.repeat) {
         inputState.dashRequested = true;
@@ -496,11 +562,11 @@ function attachInputListeners() {
     }
   });
   document.addEventListener('keyup', (event) => {
-    const key = event.key.toLowerCase();
-    if (['w', 'a', 's', 'd'].includes(key)) {
-      inputState.keys.delete(key);
+    if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
+      return;
     }
-    if (event.code === 'Space') {
+    updateMovementKeys(event, false);
+    if (event.code === 'Space' && !isTextInput(event.target)) {
       if (event.cancelable) {
         event.preventDefault();
       }
@@ -668,6 +734,57 @@ function attachMobileControls() {
   bindButton(mobileDash, () => {
     inputState.dashRequested = true;
   });
+
+  window.addEventListener('blur', () => {
+    releaseActiveInputs();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      releaseActiveInputs();
+    }
+  });
+}
+
+let lastFocusedBeforeModal = null;
+
+function isControlsModalOpen() {
+  return Boolean(controlsDialog && !controlsDialog.classList.contains('hidden'));
+}
+
+function showControlsModal() {
+  if (!controlsDialog) return;
+  if (isControlsModalOpen()) return;
+  releaseActiveInputs();
+  lastFocusedBeforeModal = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  controlsDialog.classList.remove('hidden');
+  controlsDialog.setAttribute('aria-hidden', 'false');
+  if (openControlsBtn) {
+    openControlsBtn.setAttribute('aria-expanded', 'true');
+  }
+  const focusTarget = closeControlsBtn || controlsDialog.querySelector('button, [href], [tabindex="0"]');
+  if (focusTarget instanceof HTMLElement) {
+    focusTarget.focus();
+  }
+}
+
+function hideControlsModal() {
+  if (!controlsDialog) return;
+  if (!isControlsModalOpen()) return;
+  controlsDialog.classList.add('hidden');
+  controlsDialog.setAttribute('aria-hidden', 'true');
+  if (openControlsBtn) {
+    openControlsBtn.setAttribute('aria-expanded', 'false');
+  }
+  if (lastFocusedBeforeModal && document.contains(lastFocusedBeforeModal)) {
+    lastFocusedBeforeModal.focus();
+  } else if (openControlsBtn) {
+    openControlsBtn.focus();
+  }
+}
+
+if (controlsDialog) {
+  controlsDialog.setAttribute('aria-hidden', controlsDialog.classList.contains('hidden') ? 'true' : 'false');
 }
 
 function resizeCanvas() {
@@ -765,6 +882,27 @@ function init() {
       state.currentGame.respawn();
     }
   });
+  if (openControlsBtn) {
+    openControlsBtn.setAttribute('aria-expanded', 'false');
+    openControlsBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      showControlsModal();
+    });
+  }
+  if (closeControlsBtn) {
+    closeControlsBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      hideControlsModal();
+    });
+  }
+  if (controlsDialog) {
+    controlsDialog.addEventListener('click', (event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.dataset.close === 'controls') {
+        hideControlsModal();
+      }
+    });
+  }
   loadRooms();
 }
 

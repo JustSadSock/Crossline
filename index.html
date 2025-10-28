@@ -24,6 +24,9 @@
         <input id="player-name" class="profile__input" type="text" maxlength="16" placeholder="Неон" />
         <small style="color: var(--text-dim); font-size: 0.75rem;">Измените ник перед стартом матча</small>
       </div>
+      <button id="open-controls" class="button button--ghost lobby__info-btn" type="button" aria-haspopup="dialog">
+        Инфо
+      </button>
     </header>
     <section class="lobby__grid">
       <section class="panel panel--rooms">
@@ -113,14 +116,6 @@
         <button id="respawn-btn" class="button button--primary" type="button">Респаун</button>
       </div>
     </div>
-    <footer class="game__footer">
-      <div class="tips">
-        <span>WASD — движение</span>
-        <span>ЛКМ / FIRE — выстрел</span>
-        <span>ПКМ / SHIELD — отражение</span>
-        <span>Space / DASH — рывок</span>
-      </div>
-    </footer>
     <div id="mobile-controls" class="mobile-controls">
       <div class="mobile-controls__zone">
         <div id="move-joystick" class="joystick" data-joystick="move">
@@ -141,6 +136,44 @@
       </div>
     </div>
   </section>
+
+  <div id="controls-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="controls-dialog-title" aria-hidden="true">
+    <div class="modal__backdrop" data-close="controls"></div>
+    <div class="modal__content" role="document">
+      <header class="modal__header">
+        <h2 id="controls-dialog-title">Схема управления</h2>
+        <button id="close-controls" class="modal__close" type="button" aria-label="Закрыть инфо">
+          ×
+        </button>
+      </header>
+      <div class="modal__body">
+        <section class="modal__section">
+          <h3>Клавиатура и мышь</h3>
+          <ul>
+            <li><strong>W / A / S / D</strong> или стрелки — движение</li>
+            <li><strong>ЛКМ</strong> — выстрел</li>
+            <li><strong>ПКМ</strong> — активировать щит</li>
+            <li><strong>Пробел</strong> — рывок вперёд</li>
+          </ul>
+        </section>
+        <section class="modal__section">
+          <h3>Тач-управление</h3>
+          <ul>
+            <li>Левый джойстик — движение</li>
+            <li>Правый джойстик — прицеливание</li>
+            <li>Кнопки Fire / Shield / Dash — действия</li>
+          </ul>
+        </section>
+        <section class="modal__section">
+          <h3>Способности</h3>
+          <ul>
+            <li>Щит отражает пули в сторону взгляда. Заряд держится 5 секунд, перезаряжается дольше.</li>
+            <li>Рывок имеет 3 заряда, каждый восстанавливается за 5 секунд.</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </div>
 
   <template id="room-template">
     <article class="room-card">
