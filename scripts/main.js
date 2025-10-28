@@ -138,11 +138,8 @@ function updateDashUi(value) {
 
 const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '::1'];
 
-function isLocalEnvironment() {
-  const { hostname } = window.location;
-  if (!hostname) {
-    return false;
-  }
+function isPrivateHostname(hostname) {
+  if (!hostname) return false;
   return (
     LOCAL_HOSTNAMES.includes(hostname) ||
     hostname.endsWith('.local') ||
@@ -152,15 +149,22 @@ function isLocalEnvironment() {
   );
 }
 
+function isLocalEnvironment() {
+  return isPrivateHostname(window.location?.hostname);
+}
+
 function normalizeHttpUrl(rawUrl) {
   const value = typeof rawUrl === 'string' ? rawUrl.trim() : '';
   if (!value) {
     return '';
   }
   try {
-    const parsed = new URL(value);
+    const parsed = value.includes('://') ? new URL(value) : new URL(`https://${value}`);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return '';
+    }
+    if (parsed.protocol === 'http:' && !isPrivateHostname(parsed.hostname)) {
+      parsed.protocol = 'https:';
     }
     parsed.hash = '';
     const cleanedPath = parsed.pathname.replace(/\/+$/, '');
@@ -175,10 +179,32 @@ function normalizeHttpUrl(rawUrl) {
 function httpToWs(baseUrl) {
   try {
     const parsed = new URL(baseUrl);
-    const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    const protocol = parsed.protocol === 'https:' || !isPrivateHostname(parsed.hostname) ? 'wss:' : 'ws:';
     return `${protocol}//${parsed.host}`;
   } catch (error) {
     console.warn('Unable to derive WebSocket URL from base', error);
+    return '';
+  }
+}
+
+function normalizeWsUrl(rawUrl) {
+  const value = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+  if (!value) {
+    return '';
+  }
+  try {
+    const parsed = value.includes('://') ? new URL(value) : new URL(`wss://${value}`);
+    if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+      return '';
+    }
+    if (parsed.protocol === 'ws:' && !isPrivateHostname(parsed.hostname)) {
+      parsed.protocol = 'wss:';
+    }
+    parsed.hash = '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}${parsed.search}`;
+  } catch (error) {
+    console.warn('Invalid WebSocket URL provided, ignoring', error);
     return '';
   }
 }
@@ -195,8 +221,16 @@ function getApiBaseUrl() {
 }
 
 function getWsBaseUrl() {
-  if (window.CROSSLINE_WS_URL) {
-    return window.CROSSLINE_WS_URL;
+  const explicit = normalizeWsUrl(window.CROSSLINE_WS_URL);
+  if (explicit) {
+    return explicit;
+  }
+  const apiUrl = getApiBaseUrl();
+  if (apiUrl) {
+    const derived = httpToWs(apiUrl);
+    if (derived) {
+      return derived;
+    }
   }
   if (isLocalEnvironment()) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

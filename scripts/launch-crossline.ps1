@@ -121,6 +121,13 @@ if ($tunnelInfo.ContainsKey('WS_URL')) {
     $wsUrl = $tunnelInfo['WS_URL']
 }
 
+$env:CROSSLINE_API_URL = $publicUrl
+if ($wsUrl) {
+    $env:CROSSLINE_WS_URL = $wsUrl
+} else {
+    Remove-Item Env:CROSSLINE_WS_URL -ErrorAction SilentlyContinue | Out-Null
+}
+
 Write-Host "[READY] HTTP  -> $publicUrl" -ForegroundColor Green
 if ($wsUrl) {
     Write-Host "[READY] WS    -> $wsUrl" -ForegroundColor Green
@@ -129,7 +136,8 @@ if ($configPath) {
     Write-Host "[INFO] Runtime config: $configPath" -ForegroundColor Cyan
 }
 
-Write-Host '[HINT] Use this address for Netlify or the CROSSLINE_API_URL / CROSSLINE_WS_URL variables.' -ForegroundColor Yellow
+Write-Host '[HINT] Use this origin for CROSSLINE_API_URL and append ?server=<origin> when opening index.html.' -ForegroundColor Yellow
+Write-Host '[HINT] Always prefer https:// endpoints so the client can negotiate wss:// sockets.' -ForegroundColor Yellow
 
 $monitorScript = Join-Path -Path $resolvedProjectDir -ChildPath 'monitor-server.ps1'
 if (Test-Path -Path $monitorScript) {
