@@ -108,28 +108,43 @@ export class OnlineGame {
       return;
     }
 
-    const speed = MOVE_SPEED;
+    const analogX = this.input.moveVector.x;
+    const analogY = this.input.moveVector.y;
     let moveX = 0;
     let moveY = 0;
     if (this.input.keys.has('a')) moveX -= 1;
     if (this.input.keys.has('d')) moveX += 1;
     if (this.input.keys.has('w')) moveY -= 1;
     if (this.input.keys.has('s')) moveY += 1;
+    moveX += analogX;
+    moveY += analogY;
 
     let newX = player.x;
     let newY = player.y;
-    if (moveX !== 0 || moveY !== 0) {
-      const length = Math.hypot(moveX, moveY) || 1;
-      newX += (moveX / length) * speed;
-      newY += (moveY / length) * speed;
-      newX = Math.max(15, Math.min(this.bounds.width - 15, newX));
-      newY = Math.max(15, Math.min(this.bounds.height - 15, newY));
+    const magnitude = Math.hypot(moveX, moveY);
+    if (magnitude > 0.01) {
+      const speed = MOVE_SPEED * Math.min(1, magnitude);
+      newX += (moveX / magnitude) * speed;
+      newY += (moveY / magnitude) * speed;
     }
+    newX = Math.max(15, Math.min(this.bounds.width - 15, newX));
+    newY = Math.max(15, Math.min(this.bounds.height - 15, newY));
 
     const scaleX = this.bounds.width / this.canvas.width;
     const scaleY = this.bounds.height / this.canvas.height;
-    const pointerX = this.input.pointer.x * scaleX;
-    const pointerY = this.input.pointer.y * scaleY;
+    let pointerCanvasX = this.input.pointer.x;
+    let pointerCanvasY = this.input.pointer.y;
+    if (this.input.aimVector.active) {
+      const aimDistance = 180;
+      const aimX = player.x + this.input.aimVector.x * aimDistance;
+      const aimY = player.y + this.input.aimVector.y * aimDistance;
+      pointerCanvasX = Math.max(0, Math.min(this.canvas.width, aimX * (this.canvas.width / this.bounds.width)));
+      pointerCanvasY = Math.max(0, Math.min(this.canvas.height, aimY * (this.canvas.height / this.bounds.height)));
+      this.input.pointer.x = pointerCanvasX;
+      this.input.pointer.y = pointerCanvasY;
+    }
+    const pointerX = pointerCanvasX * scaleX;
+    const pointerY = pointerCanvasY * scaleY;
     const angle = Math.atan2(pointerY - player.y, pointerX - player.x);
 
     if (
@@ -151,6 +166,8 @@ export class OnlineGame {
       this.ws.send(JSON.stringify({ type: 'shoot' }));
       this.lastShotAt = now;
     }
+
+    this.input.consumeDashRequest();
   }
 
   respawn() {

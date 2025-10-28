@@ -79,6 +79,26 @@
         </div>
         <span id="health-value" class="hud__value">100</span>
       </div>
+      <div class="hud hud--ability">
+        <div class="hud__ability-row">
+          <span class="hud__label">shield</span>
+          <span id="shield-value" class="hud__value">100%</span>
+        </div>
+        <div class="hud__bar hud__bar--ability">
+          <div id="shield-fill" class="hud__bar-fill"></div>
+        </div>
+      </div>
+      <div class="hud hud--ability hud--ability-charges">
+        <div class="hud__ability-row">
+          <span class="hud__label">dash</span>
+          <span id="dash-ready" class="hud__value">3</span>
+        </div>
+        <div id="dash-charges" class="hud__charges" role="presentation">
+          <span class="hud__charge" data-index="0"></span>
+          <span class="hud__charge" data-index="1"></span>
+          <span class="hud__charge" data-index="2"></span>
+        </div>
+      </div>
       <div class="hud hud--score">
         <span class="hud__label">score</span>
         <ul id="scoreboard" class="scoreboard"></ul>
@@ -96,20 +116,29 @@
     <footer class="game__footer">
       <div class="tips">
         <span>WASD — движение</span>
-        <span>Мышь / тап — прицеливание</span>
-        <span>Клик / FIRE — выстрел</span>
+        <span>ЛКМ / FIRE — выстрел</span>
+        <span>ПКМ / SHIELD — отражение</span>
+        <span>Space / DASH — рывок</span>
       </div>
     </footer>
     <div id="mobile-controls" class="mobile-controls">
-      <div class="mobile-controls__dpad">
-        <button data-key="w" class="mobile-key">▲</button>
-        <div class="mobile-controls__dpad-row">
-          <button data-key="a" class="mobile-key">◀</button>
-          <button data-key="s" class="mobile-key">▼</button>
-          <button data-key="d" class="mobile-key">▶</button>
+      <div class="mobile-controls__zone">
+        <div id="move-joystick" class="joystick" data-joystick="move">
+          <div class="joystick__base"></div>
+          <div class="joystick__stick"></div>
         </div>
       </div>
-      <button id="mobile-fire" class="mobile-fire">FIRE</button>
+      <div class="mobile-controls__zone mobile-controls__zone--actions">
+        <div id="aim-joystick" class="joystick" data-joystick="aim">
+          <div class="joystick__base"></div>
+          <div class="joystick__stick"></div>
+        </div>
+        <div class="mobile-buttons">
+          <button id="mobile-fire" class="mobile-button">fire</button>
+          <button id="mobile-shield" class="mobile-button">shield</button>
+          <button id="mobile-dash" class="mobile-button">dash</button>
+        </div>
+      </div>
     </div>
   </section>
 

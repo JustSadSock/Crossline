@@ -5,12 +5,26 @@ const BULLET_RADIUS = 4;
 const MOVE_SPEED = 4.2;
 const BULLET_SPEED = 9;
 const DAMAGE = 22;
+const SHIELD_MAX_CHARGE = 5000;
+const SHIELD_RECHARGE_FACTOR = 0.5;
+const SHIELD_ARC = Math.PI * 0.9;
+const SHIELD_RADIUS = PLAYER_RADIUS + 22;
+const DASH_MAX_CHARGES = 3;
+const DASH_RECHARGE_MS = 5000;
+const DASH_DISTANCE = 160;
 
 const BOT_DIFFICULTY = {
   easy: { speed: 2.6, fireRate: 650, accuracy: 0.6 },
   normal: { speed: 3.2, fireRate: 480, accuracy: 0.75 },
   hard: { speed: 3.9, fireRate: 360, accuracy: 0.9 },
 };
+
+function normalizeAngle(angle) {
+  let value = angle;
+  while (value > Math.PI) value -= Math.PI * 2;
+  while (value < -Math.PI) value += Math.PI * 2;
+  return value;
+}
 
 export class OfflineGame {
   constructor({ canvas, inputState, ui }) {
@@ -26,6 +40,7 @@ export class OfflineGame {
     this.playerName = 'Pilot';
     this.lastShotAt = 0;
     this.botShotAt = 0;
+    this.lastFrameTime = 0;
   }
 
   start({ difficulty = 'normal', playerName = 'Pilot' }) {
@@ -33,6 +48,7 @@ export class OfflineGame {
     this.playerName = playerName || 'Pilot';
     this.resetState();
     this.running = true;
+    this.lastFrameTime = performance.now();
     this.loop();
   }
 
@@ -64,6 +80,10 @@ export class OfflineGame {
         health: 100,
         alive: true,
         score: 0,
+        shieldCharge: SHIELD_MAX_CHARGE,
+        shieldActive: false,
+        dashCharge: DASH_MAX_CHARGES,
+        lastMoveDirection: { x: 1, y: 0 },
       },
       bot: {
         id: 'bot',
@@ -74,6 +94,10 @@ export class OfflineGame {
         health: 100,
         alive: true,
         score: 0,
+        shieldCharge: SHIELD_MAX_CHARGE,
+        shieldActive: false,
+        dashCharge: DASH_MAX_CHARGES,
+        lastMoveDirection: { x: -1, y: 0 },
       },
     };
     this.bullets = [];
@@ -93,6 +117,10 @@ export class OfflineGame {
     player.y = GAME_HEIGHT * 0.5;
     player.health = 100;
     player.alive = true;
+    player.shieldCharge = SHIELD_MAX_CHARGE;
+    player.shieldActive = false;
+    player.dashCharge = DASH_MAX_CHARGES;
+    player.lastMoveDirection = { x: 1, y: 0 };
   }
 
   spawnBot(bot) {
@@ -100,22 +128,31 @@ export class OfflineGame {
     bot.y = GAME_HEIGHT * 0.5;
     bot.health = 100;
     bot.alive = true;
+    bot.shieldActive = false;
+    bot.shieldCharge = SHIELD_MAX_CHARGE;
+    bot.dashCharge = DASH_MAX_CHARGES;
+    bot.lastMoveDirection = { x: -1, y: 0 };
   }
 
   loop() {
     if (!this.running) return;
-    this.update();
+    const now = performance.now();
+    const delta = this.lastFrameTime ? now - this.lastFrameTime : 16;
+    this.lastFrameTime = now;
+    this.update(delta);
     this.render();
     this.animationId = requestAnimationFrame(() => this.loop());
   }
 
-  update() {
+  update(delta) {
     const player = this.players.player;
     const bot = this.players.bot;
     if (!player || !bot) return;
 
     if (player.alive) {
-      this.updatePlayer(player);
+      this.updatePlayer(player, delta);
+    } else {
+      player.shieldActive = false;
     }
     if (bot.alive) {
       this.updateBot(bot, player);
@@ -125,25 +162,44 @@ export class OfflineGame {
     this.updateUi();
   }
 
-  updatePlayer(player) {
-    let moveX = 0;
-    let moveY = 0;
-    if (this.input.keys.has('a')) moveX -= 1;
-    if (this.input.keys.has('d')) moveX += 1;
-    if (this.input.keys.has('w')) moveY -= 1;
-    if (this.input.keys.has('s')) moveY += 1;
-    if (moveX !== 0 || moveY !== 0) {
-      const length = Math.hypot(moveX, moveY) || 1;
-      player.x += (moveX / length) * MOVE_SPEED;
-      player.y += (moveY / length) * MOVE_SPEED;
+  updatePlayer(player, delta) {
+    const analogX = this.input.moveVector.x;
+    const analogY = this.input.moveVector.y;
+    let keyX = 0;
+    let keyY = 0;
+    if (this.input.keys.has('a')) keyX -= 1;
+    if (this.input.keys.has('d')) keyX += 1;
+    if (this.input.keys.has('w')) keyY -= 1;
+    if (this.input.keys.has('s')) keyY += 1;
+    const combinedX = keyX + analogX;
+    const combinedY = keyY + analogY;
+    const magnitude = Math.hypot(combinedX, combinedY);
+    if (magnitude > 0.01) {
+      const speedMultiplier = Math.min(1, magnitude);
+      const moveX = (combinedX / magnitude) * MOVE_SPEED * speedMultiplier;
+      const moveY = (combinedY / magnitude) * MOVE_SPEED * speedMultiplier;
+      player.x += moveX;
+      player.y += moveY;
+      player.lastMoveDirection = { x: combinedX / magnitude, y: combinedY / magnitude };
     }
     player.x = Math.max(PLAYER_RADIUS, Math.min(GAME_WIDTH - PLAYER_RADIUS, player.x));
     player.y = Math.max(PLAYER_RADIUS, Math.min(GAME_HEIGHT - PLAYER_RADIUS, player.y));
 
     const scaleX = GAME_WIDTH / this.canvas.width;
     const scaleY = GAME_HEIGHT / this.canvas.height;
-    const targetX = this.input.pointer.x * scaleX;
-    const targetY = this.input.pointer.y * scaleY;
+    const invScaleX = this.canvas.width / GAME_WIDTH;
+    const invScaleY = this.canvas.height / GAME_HEIGHT;
+    let targetX = this.input.pointer.x * scaleX;
+    let targetY = this.input.pointer.y * scaleY;
+    if (this.input.aimVector.active) {
+      const aimDistance = 180;
+      const aimX = player.x + this.input.aimVector.x * aimDistance;
+      const aimY = player.y + this.input.aimVector.y * aimDistance;
+      targetX = aimX;
+      targetY = aimY;
+      this.input.pointer.x = Math.max(0, Math.min(this.canvas.width, aimX * invScaleX));
+      this.input.pointer.y = Math.max(0, Math.min(this.canvas.height, aimY * invScaleY));
+    }
     player.angle = Math.atan2(targetY - player.y, targetX - player.x);
 
     const now = performance.now();
@@ -151,6 +207,39 @@ export class OfflineGame {
       this.spawnBullet(player);
       this.lastShotAt = now;
     }
+
+    if (this.input.shield && player.shieldCharge > 0) {
+      player.shieldActive = true;
+      player.shieldCharge = Math.max(0, player.shieldCharge - delta);
+      if (player.shieldCharge <= 0) {
+        player.shieldActive = false;
+      }
+    } else {
+      player.shieldActive = false;
+      player.shieldCharge = Math.min(
+        SHIELD_MAX_CHARGE,
+        player.shieldCharge + delta * SHIELD_RECHARGE_FACTOR
+      );
+    }
+
+    const dashRequested = this.input.consumeDashRequest();
+    if (dashRequested && player.dashCharge >= 1) {
+      const baseX = magnitude > 0.01 ? combinedX / magnitude : player.lastMoveDirection.x || Math.cos(player.angle);
+      const baseY = magnitude > 0.01 ? combinedY / magnitude : player.lastMoveDirection.y || Math.sin(player.angle);
+      const dirLength = Math.hypot(baseX, baseY) || 1;
+      const dirX = baseX / dirLength;
+      const dirY = baseY / dirLength;
+      player.x += dirX * DASH_DISTANCE;
+      player.y += dirY * DASH_DISTANCE;
+      player.dashCharge = Math.max(0, player.dashCharge - 1);
+      player.x = Math.max(PLAYER_RADIUS, Math.min(GAME_WIDTH - PLAYER_RADIUS, player.x));
+      player.y = Math.max(PLAYER_RADIUS, Math.min(GAME_HEIGHT - PLAYER_RADIUS, player.y));
+    }
+
+    player.dashCharge = Math.min(
+      DASH_MAX_CHARGES,
+      player.dashCharge + delta / DASH_RECHARGE_MS
+    );
   }
 
   updateBot(bot, player) {
@@ -196,6 +285,7 @@ export class OfflineGame {
       y: shooter.y,
       angle,
       owner: shooter.id,
+      reflected: false,
     });
   }
 
@@ -211,6 +301,24 @@ export class OfflineGame {
         const target = this.players[targetId];
         if (!target || !target.alive) continue;
         const distance = Math.hypot(target.x - bullet.x, target.y - bullet.y);
+        if (
+          target.shieldActive &&
+          target.shieldCharge > 0 &&
+          bullet.owner !== target.id &&
+          distance < SHIELD_RADIUS
+        ) {
+          const toBulletAngle = Math.atan2(bullet.y - target.y, bullet.x - target.x);
+          const angleDiff = Math.abs(normalizeAngle(target.angle - toBulletAngle));
+          if (angleDiff <= SHIELD_ARC / 2) {
+            bullet.owner = target.id;
+            bullet.reflected = true;
+            bullet.angle = target.angle;
+            const offset = SHIELD_RADIUS + 6;
+            bullet.x = target.x + Math.cos(target.angle) * offset;
+            bullet.y = target.y + Math.sin(target.angle) * offset;
+            return true;
+          }
+        }
         if (distance < PLAYER_RADIUS + BULLET_RADIUS) {
           target.health -= DAMAGE;
           if (target.health <= 0) {
@@ -237,6 +345,8 @@ export class OfflineGame {
     const bot = this.players.bot;
     if (player) {
       this.ui.setHealth(player.health);
+      this.ui.setShield(player.shieldCharge / SHIELD_MAX_CHARGE, player.shieldActive);
+      this.ui.setDash(player.dashCharge);
       if (!player.alive) {
         this.ui.toggleRespawn(true);
       }
@@ -324,6 +434,29 @@ export class OfflineGame {
       ctx.arc(px, py, PLAYER_RADIUS, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
+
+      if (player.shieldActive && player.shieldCharge > 0) {
+        const shieldRatio = player.shieldCharge / SHIELD_MAX_CHARGE;
+        const radius = (PLAYER_RADIUS + 18) * ((scaleX + scaleY) / 2);
+        ctx.save();
+        ctx.globalAlpha = 0.4 + shieldRatio * 0.35;
+        ctx.fillStyle = 'rgba(77, 246, 255, 0.25)';
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.arc(px, py, radius, player.angle - SHIELD_ARC / 2, player.angle + SHIELD_ARC / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        ctx.strokeStyle = 'rgba(77, 246, 255, 0.9)';
+        ctx.lineWidth = 6;
+        ctx.globalAlpha = 0.7 + shieldRatio * 0.2;
+        ctx.beginPath();
+        ctx.arc(px, py, radius, player.angle - SHIELD_ARC / 2, player.angle + SHIELD_ARC / 2);
+        ctx.stroke();
+        ctx.restore();
+      }
 
       ctx.save();
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
