@@ -50,7 +50,7 @@ $configLines = @(
     '  try {',
     '    const parsed = new URL(tunnelOrigin);',
     "    const wsProtocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';",
-    "    window.CROSSLINE_WS_URL = `${wsProtocol}//${parsed.host}`;",
+    '    window.CROSSLINE_WS_URL = `${wsProtocol}//${parsed.host}`;',
     '  } catch (error) {',
     "    console.warn('WS URL config error', error);",
     '  }',
