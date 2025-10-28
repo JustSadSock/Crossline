@@ -22,9 +22,7 @@
       <div class="profile">
         <label for="player-name" class="profile__label">Никнейм</label>
         <input id="player-name" class="profile__input" type="text" maxlength="16" placeholder="Неон" />
-        <label for="server-url" class="profile__label">URL Сервера (опционально)</label>
-        <input id="server-url" class="profile__input" type="text" placeholder="https://your-server.ngrok.io" />
-        <small style="color: var(--text-dim); font-size: 0.75rem;">Оставьте пустым для локального сервера</small>
+        <small style="color: var(--text-dim); font-size: 0.75rem;">Измените ник перед стартом матча</small>
       </div>
     </header>
     <section class="lobby__grid">
@@ -125,6 +123,7 @@
     </article>
   </template>
 
+  <script src="./scripts/runtime-config.js"></script>
   <script type="module" src="./scripts/main.js"></script>
 </body>
 </html>
