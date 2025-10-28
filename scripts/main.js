@@ -36,6 +36,9 @@ const closeControlsBtn = document.getElementById('close-controls');
 const roomTemplate = document.getElementById('room-template');
 const notificationsRoot = document.getElementById('notifications');
 
+const SHIELD_KEY_CODES = new Set(['ShiftLeft', 'ShiftRight']);
+const SHIELD_KEY_FALLBACKS = new Set(['q', 'e']);
+
 const inputState = {
   keys: new Set(),
   pointer: { x: canvas.width / 2, y: canvas.height / 2 },
@@ -538,6 +541,7 @@ function releaseActiveInputs() {
   inputState.keys.clear();
   inputState.fire = false;
   inputState.shield = false;
+  inputState.dashRequested = false;
   inputState.moveVector.x = 0;
   inputState.moveVector.y = 0;
   inputState.aimVector.x = 0;
@@ -554,11 +558,20 @@ function attachInputListeners() {
       return;
     }
     updateMovementKeys(event, true);
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
     if (event.code === 'Space' && !isTextInput(event.target)) {
       event.preventDefault();
       if (!event.repeat) {
         inputState.dashRequested = true;
       }
+    } else if (
+      !isTextInput(event.target) &&
+      (SHIELD_KEY_CODES.has(event.code) || SHIELD_KEY_FALLBACKS.has(key))
+    ) {
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+      inputState.shield = true;
     }
   });
   document.addEventListener('keyup', (event) => {
@@ -570,6 +583,14 @@ function attachInputListeners() {
       if (event.cancelable) {
         event.preventDefault();
       }
+    } else if (
+      !isTextInput(event.target) &&
+      (SHIELD_KEY_CODES.has(event.code) || SHIELD_KEY_FALLBACKS.has((event.key || '').toLowerCase()))
+    ) {
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+      inputState.shield = false;
     }
   });
   canvas.addEventListener('mousemove', (event) => {

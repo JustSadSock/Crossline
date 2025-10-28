@@ -7,9 +7,18 @@ const {
   BULLET_RADIUS,
   BULLET_SPEED,
   DAMAGE_PER_HIT,
+  SHIELD_MAX_CHARGE,
+  SHIELD_RECHARGE_FACTOR,
+  SHIELD_ARC,
+  SHIELD_RADIUS,
+  DASH_MAX_CHARGES,
+  DASH_RECHARGE_MS,
+  DASH_DISTANCE,
 } = require('./constants');
 
 const TICK_RATE = 30;
+const MOVE_THROTTLE_MS = 16;
+const STEP_DELTA = 1000 / TICK_RATE;
 
 class GameRoom {
   constructor({ id, name, maxPlayers = 8, persistent = false }) {
@@ -78,6 +87,12 @@ class GameRoom {
       alive: true,
       score: 0,
       respawnTimer: null,
+      shieldCharge: SHIELD_MAX_CHARGE,
+      shieldActive: false,
+      shieldRequested: false,
+      dashCharge: DASH_MAX_CHARGES,
+      lastMoveDirection: { x: 1, y: 0 },
+      lastMoveMessageAt: 0,
     };
     this.clients.set(playerId, ws);
     this.lastActivity = Date.now();
@@ -107,17 +122,58 @@ class GameRoom {
     const player = this.players[playerId];
     if (!player) return;
 
+    const now = Date.now();
+
     if (message.type === 'move' && player.alive) {
+      if (player.lastMoveMessageAt && now - player.lastMoveMessageAt < MOVE_THROTTLE_MS) {
+        return;
+      }
       const { x, y, angle } = message;
-      player.x = clamp(x, PLAYER_RADIUS, GAME_WIDTH - PLAYER_RADIUS);
-      player.y = clamp(y, PLAYER_RADIUS, GAME_HEIGHT - PLAYER_RADIUS);
-      player.angle = typeof angle === 'number' ? angle : player.angle;
-      this.lastActivity = Date.now();
+      const clampedX = clamp(x, PLAYER_RADIUS, GAME_WIDTH - PLAYER_RADIUS);
+      const clampedY = clamp(y, PLAYER_RADIUS, GAME_HEIGHT - PLAYER_RADIUS);
+      const deltaX = clampedX - player.x;
+      const deltaY = clampedY - player.y;
+      if (deltaX || deltaY) {
+        const length = Math.hypot(deltaX, deltaY) || 1;
+        player.lastMoveDirection = { x: deltaX / length, y: deltaY / length };
+      }
+      player.x = clampedX;
+      player.y = clampedY;
+      if (typeof angle === 'number' && Number.isFinite(angle)) {
+        player.angle = angle;
+      }
+      player.lastMoveMessageAt = now;
+      this.lastActivity = now;
     } else if (message.type === 'shoot' && player.alive) {
       this.spawnBullet(playerId);
-      this.lastActivity = Date.now();
+      this.lastActivity = now;
     } else if (message.type === 'respawn' && !player.alive) {
       this.respawnPlayer(playerId);
+    } else if (message.type === 'shield') {
+      player.shieldRequested = !!message.active && player.alive;
+      if (!player.shieldRequested) {
+        player.shieldActive = false;
+      }
+      this.lastActivity = now;
+    } else if (message.type === 'dash' && player.alive) {
+      if (player.dashCharge >= 1) {
+        const dirX = typeof message.dirX === 'number' ? message.dirX : 0;
+        const dirY = typeof message.dirY === 'number' ? message.dirY : 0;
+        let baseX = dirX;
+        let baseY = dirY;
+        if (!baseX && !baseY) {
+          baseX = player.lastMoveDirection.x || Math.cos(player.angle);
+          baseY = player.lastMoveDirection.y || Math.sin(player.angle);
+        }
+        const length = Math.hypot(baseX, baseY) || 1;
+        const normX = baseX / length;
+        const normY = baseY / length;
+        player.x = clamp(player.x + normX * DASH_DISTANCE, PLAYER_RADIUS, GAME_WIDTH - PLAYER_RADIUS);
+        player.y = clamp(player.y + normY * DASH_DISTANCE, PLAYER_RADIUS, GAME_HEIGHT - PLAYER_RADIUS);
+        player.dashCharge = Math.max(0, player.dashCharge - 1);
+        player.lastMoveDirection = { x: normX, y: normY };
+      }
+      this.lastActivity = now;
     }
   }
 
@@ -142,10 +198,45 @@ class GameRoom {
     player.health = 100;
     player.alive = true;
     player.respawnTimer = null;
+    player.shieldCharge = SHIELD_MAX_CHARGE;
+    player.shieldActive = false;
+    player.shieldRequested = false;
+    player.dashCharge = DASH_MAX_CHARGES;
+    player.lastMoveDirection = { x: 1, y: 0 };
     this.lastActivity = Date.now();
   }
 
   step() {
+    if (this.clients.size === 0) {
+      return;
+    }
+
+    Object.values(this.players).forEach((player) => {
+      if (!player.alive) {
+        player.shieldActive = false;
+        player.shieldRequested = false;
+        player.dashCharge = Math.min(DASH_MAX_CHARGES, player.dashCharge + STEP_DELTA / DASH_RECHARGE_MS);
+        return;
+      }
+      if (player.shieldRequested && player.shieldCharge > 0) {
+        player.shieldActive = true;
+        player.shieldCharge = Math.max(0, player.shieldCharge - STEP_DELTA);
+        if (player.shieldCharge <= 0) {
+          player.shieldActive = false;
+        }
+      } else {
+        player.shieldActive = false;
+        player.shieldCharge = Math.min(
+          SHIELD_MAX_CHARGE,
+          player.shieldCharge + STEP_DELTA * SHIELD_RECHARGE_FACTOR,
+        );
+      }
+      player.dashCharge = Math.min(
+        DASH_MAX_CHARGES,
+        player.dashCharge + STEP_DELTA / DASH_RECHARGE_MS,
+      );
+    });
+
     const now = Date.now();
     this.bullets = this.bullets.filter((bullet) => {
       bullet.x += Math.cos(bullet.angle) * BULLET_SPEED;
@@ -157,6 +248,23 @@ class GameRoom {
         const player = this.players[playerId];
         if (!player.alive || playerId === bullet.owner) continue;
         const distance = Math.hypot(player.x - bullet.x, player.y - bullet.y);
+        if (
+          player.shieldActive &&
+          player.shieldCharge > 0 &&
+          distance < SHIELD_RADIUS &&
+          bullet.owner !== playerId
+        ) {
+          const toBulletAngle = Math.atan2(bullet.y - player.y, bullet.x - player.x);
+          const angleDiff = Math.abs(normalizeAngle(player.angle - toBulletAngle));
+          if (angleDiff <= SHIELD_ARC / 2) {
+            bullet.owner = playerId;
+            bullet.angle = player.angle;
+            const offset = SHIELD_RADIUS + 6;
+            bullet.x = player.x + Math.cos(player.angle) * offset;
+            bullet.y = player.y + Math.sin(player.angle) * offset;
+            return true;
+          }
+        }
         if (distance < PLAYER_RADIUS + BULLET_RADIUS) {
           player.health -= DAMAGE_PER_HIT;
           if (player.health <= 0) {
@@ -178,10 +286,33 @@ class GameRoom {
   }
 
   broadcastState() {
+    const players = {};
+    Object.entries(this.players).forEach(([id, player]) => {
+      players[id] = {
+        id: player.id,
+        name: player.name,
+        x: player.x,
+        y: player.y,
+        angle: player.angle,
+        health: player.health,
+        alive: player.alive,
+        score: player.score || 0,
+        shieldCharge: player.shieldCharge,
+        shieldActive: player.shieldActive,
+        dashCharge: player.dashCharge,
+      };
+    });
+    const bullets = this.bullets.map((bullet) => ({
+      id: bullet.id,
+      x: bullet.x,
+      y: bullet.y,
+      angle: bullet.angle,
+      owner: bullet.owner,
+    }));
     const payload = JSON.stringify({
       type: 'gameState',
-      players: this.players,
-      bullets: this.bullets,
+      players,
+      bullets,
     });
     this.clients.forEach((ws) => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -206,6 +337,13 @@ class GameRoom {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizeAngle(angle) {
+  let value = angle;
+  while (value > Math.PI) value -= Math.PI * 2;
+  while (value < -Math.PI) value += Math.PI * 2;
+  return value;
 }
 
 module.exports = GameRoom;

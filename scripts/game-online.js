@@ -2,6 +2,11 @@ const GAME_WIDTH = 960;
 const GAME_HEIGHT = 540;
 const MOVE_SPEED = 4.6;
 const SHOT_COOLDOWN = 200;
+const SHIELD_MAX_CHARGE = 5000;
+const SHIELD_ARC = Math.PI * 0.9;
+const SHIELD_RADIUS = 38;
+const DASH_DISTANCE = 160;
+const MOVE_SEND_INTERVAL = 1000 / 60;
 
 export class OnlineGame {
   constructor({ canvas, inputState, ui, wsBaseUrl }) {
@@ -18,12 +23,19 @@ export class OnlineGame {
     this.running = false;
     this.animationId = null;
     this.lastSent = { x: null, y: null, angle: null };
+    this.lastMoveSentAt = 0;
     this.lastShotAt = 0;
     this.bounds = { width: GAME_WIDTH, height: GAME_HEIGHT };
+    this.lastShieldSent = false;
+    this.lastDashVector = { x: 1, y: 0 };
   }
 
   start({ roomId, playerName }) {
     this.roomId = roomId;
+    this.lastSent = { x: null, y: null, angle: null };
+    this.lastMoveSentAt = 0;
+    this.lastShieldSent = false;
+    this.lastDashVector = { x: 1, y: 0 };
     return new Promise((resolve, reject) => {
       // Use configured wsBaseUrl if provided, otherwise use current host
       let wsUrl;
@@ -147,11 +159,17 @@ export class OnlineGame {
     const pointerY = pointerCanvasY * scaleY;
     const angle = Math.atan2(pointerY - player.y, pointerX - player.x);
 
-    if (
-      newX !== this.lastSent.x ||
-      newY !== this.lastSent.y ||
-      angle !== this.lastSent.angle
-    ) {
+    if (magnitude > 0.01) {
+      this.lastDashVector = { x: moveX / magnitude, y: moveY / magnitude };
+    }
+
+    const now = performance.now();
+    const positionChanged =
+      this.lastSent.x === null ||
+      Math.abs(newX - this.lastSent.x) > 0.25 ||
+      Math.abs(newY - this.lastSent.y) > 0.25;
+    const angleChanged = this.lastSent.angle === null || Math.abs(angle - this.lastSent.angle) > 0.01;
+    if ((positionChanged || angleChanged) && now - this.lastMoveSentAt >= MOVE_SEND_INTERVAL) {
       this.ws.send(JSON.stringify({
         type: 'move',
         x: newX,
@@ -159,15 +177,40 @@ export class OnlineGame {
         angle,
       }));
       this.lastSent = { x: newX, y: newY, angle };
+      this.lastMoveSentAt = now;
     }
 
-    const now = performance.now();
     if (this.input.fire && now - this.lastShotAt > SHOT_COOLDOWN) {
       this.ws.send(JSON.stringify({ type: 'shoot' }));
       this.lastShotAt = now;
     }
 
-    this.input.consumeDashRequest();
+    const dashTriggered = this.input.consumeDashRequest();
+    if (dashTriggered) {
+      let dashX = this.lastDashVector.x;
+      let dashY = this.lastDashVector.y;
+      if (!dashX && !dashY) {
+        dashX = Math.cos(angle);
+        dashY = Math.sin(angle);
+      }
+      const length = Math.hypot(dashX, dashY) || 1;
+      const dirX = dashX / length;
+      const dirY = dashY / length;
+      this.ws.send(JSON.stringify({ type: 'dash', dirX, dirY }));
+      const predictedX = Math.max(15, Math.min(this.bounds.width - 15, player.x + dirX * DASH_DISTANCE));
+      const predictedY = Math.max(15, Math.min(this.bounds.height - 15, player.y + dirY * DASH_DISTANCE));
+      player.x = predictedX;
+      player.y = predictedY;
+      this.lastSent.x = predictedX;
+      this.lastSent.y = predictedY;
+      this.lastMoveSentAt = now;
+    }
+
+    const shieldActive = !!this.input.shield;
+    if (shieldActive !== this.lastShieldSent) {
+      this.ws.send(JSON.stringify({ type: 'shield', active: shieldActive }));
+      this.lastShieldSent = shieldActive;
+    }
   }
 
   respawn() {
@@ -180,10 +223,15 @@ export class OnlineGame {
     const player = this.players[this.playerId];
     if (player) {
       this.ui.setHealth(player.health);
+      const shieldRatio = player.shieldCharge != null ? player.shieldCharge / SHIELD_MAX_CHARGE : 0;
+      this.ui.setShield(shieldRatio, !!player.shieldActive);
+      this.ui.setDash(player.dashCharge != null ? player.dashCharge : 0);
       this.ui.toggleRespawn(!player.alive);
       this.ui.setRespawnEnabled(true);
     } else {
       this.ui.setHealth(0);
+      this.ui.setShield(0, false);
+      this.ui.setDash(0);
       this.ui.toggleRespawn(false);
     }
     const entries = Object.values(this.players).map((p) => ({
@@ -269,6 +317,17 @@ export class OnlineGame {
       const px = player.x * scaleX;
       const py = player.y * scaleY;
       const color = isSelf ? '#4df6ff' : '#ff2cfb';
+      if (player.shieldActive && player.shieldCharge > 0) {
+        const shieldRatio = Math.max(0, Math.min(1, player.shieldCharge / SHIELD_MAX_CHARGE));
+        ctx.save();
+        ctx.strokeStyle = isSelf ? 'rgba(77, 246, 255, 0.7)' : 'rgba(255, 44, 251, 0.7)';
+        ctx.lineWidth = 6;
+        ctx.globalAlpha = 0.35 + shieldRatio * 0.45;
+        ctx.beginPath();
+        ctx.arc(px, py, SHIELD_RADIUS, player.angle - SHIELD_ARC / 2, player.angle + SHIELD_ARC / 2);
+        ctx.stroke();
+        ctx.restore();
+      }
       ctx.save();
       ctx.fillStyle = color;
       ctx.shadowColor = color;
