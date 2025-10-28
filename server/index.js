@@ -7,13 +7,30 @@ const PORT = process.env.PORT || 3000;
 
 // Create HTTP server
 const server = http.createServer((req, res) => {
-  let filePath = '.' + req.url;
-  if (filePath === './') {
+  // Sanitize URL to prevent path traversal
+  let requestPath = req.url.split('?')[0]; // Remove query parameters
+  
+  let filePath = './public/index.html';
+  if (requestPath === '/') {
     filePath = './public/index.html';
-  } else if (req.url.startsWith('/js/')) {
-    filePath = './public' + req.url;
-  } else if (req.url.startsWith('/css/')) {
-    filePath = './public' + req.url;
+  } else if (requestPath.startsWith('/js/')) {
+    filePath = './public' + requestPath;
+  } else if (requestPath.startsWith('/css/')) {
+    filePath = './public' + requestPath;
+  } else {
+    // Default to index.html for unknown paths
+    filePath = './public/index.html';
+  }
+
+  // Resolve the file path and ensure it's within the public directory
+  const publicDir = path.resolve(__dirname, '../public');
+  const resolvedPath = path.resolve(filePath);
+  
+  // Check if the resolved path is within the public directory
+  if (!resolvedPath.startsWith(publicDir)) {
+    res.writeHead(403);
+    res.end('403 - Forbidden');
+    return;
   }
 
   const extname = String(path.extname(filePath)).toLowerCase();
@@ -29,7 +46,7 @@ const server = http.createServer((req, res) => {
 
   const contentType = mimeTypes[extname] || 'application/octet-stream';
 
-  fs.readFile(filePath, (error, content) => {
+  fs.readFile(resolvedPath, (error, content) => {
     if (error) {
       if (error.code === 'ENOENT') {
         res.writeHead(404);
