@@ -42,14 +42,17 @@ if exist "%NGROK_EXE%" (
 
 rem ========= START SERVER =========
 set "SCRIPT_DIR=%cd%"
-start "Crossline Server" cmd /k ^
-"cd /d "%SCRIPT_DIR%" && set PORT=%PORT% && node server\index.js"
+start "Crossline Server" cmd /k "cd /d "%SCRIPT_DIR%" && set PORT=%PORT% && node server\index.js"
 
 rem ========= START NGROK =========
-start "ngrok Tunnel" cmd /k ^
-"cd /d "%SCRIPT_DIR%" && "%NGROK_EXE%" http %PORT% --log=stdout"
+timeout /t 2 /nobreak >nul
+start "ngrok Tunnel" cmd /k "cd /d "%SCRIPT_DIR%" && "%NGROK_EXE%" http %PORT% --log=stdout"
 
-echo [READY] Server and ngrok launched in separate windows.
+rem ========= START LOG MONITOR =========
+timeout /t 1 /nobreak >nul
+start "Server Logs Monitor" cmd /k "cd /d "%SCRIPT_DIR%" && set PORT=%PORT% && powershell -ExecutionPolicy Bypass -File "%SCRIPT_DIR%\monitor-server.ps1""
+
+echo [READY] Three windows launched: Server, ngrok tunnel, and log monitor.
 echo [INFO] Check the console windows for output.
 pause
 endlocal
