@@ -5,7 +5,7 @@ rem ===== Crossline: zero-input launcher (server + ngrok + deps) =====
 cd /d "%~dp0"
 
 rem -------- Settings (edit once if you want) --------
-if not defined PORT set "PORT=3000"
+if not defined PORT set "PORT=80"
 if not defined NGROK_EXE set "NGROK_EXE=ngrok"
 if not defined NGROK_AUTHTOKEN set "NGROK_AUTHTOKEN=316t6ozoUFVJPzOC0KV01Ln93M5_ARhwXXj9eAtjqAwEDNtz"
 rem (you can override NGROK_AUTHTOKEN/PORT via environment before launching)
@@ -15,12 +15,20 @@ set "REQUESTED_PORT=%PORT%"
 for /f "delims=." %%P in ("%PORT%") do set "PORT=%%P"
 set /a PORT_NUM=%PORT% 2>nul
 if errorlevel 1 set "PORT_NUM=0"
-if %PORT_NUM% LSS 1 set "PORT=3000" & set "PORT_NUM=3000"
+if %PORT_NUM% LSS 1 set "PORT=80" & set "PORT_NUM=80"
 
 if %PORT_NUM% LSS 1024 if %PORT_NUM% GTR 0 (
   net session >nul 2>&1
   if errorlevel 1 (
-    echo [WARN] Port %REQUESTED_PORT% requires administrator rights. Falling back to 3000.
+    echo [ERROR] Port %REQUESTED_PORT% requires administrator rights.
+    echo         Перезапустите батник от имени администратора или выберите другой порт.
+    choice /c YN /m "Fallback to port 3000 for this session? [Y/N]"
+    if errorlevel 2 (
+      echo [INFO] Отмена запуска. Ни сервер, ни туннель не были запущены.
+      pause
+      exit /b 1
+    )
+    echo [INFO] Используем порт 3000 для текущего запуска.
     set "PORT=3000"
     set "PORT_NUM=3000"
   )
@@ -113,6 +121,7 @@ echo Logs:
 echo   %SERVER_LOG%
 echo   %NGROK_LOG%
 echo Starting server on http://localhost:%PORT%
+echo (Если дочерние окна закрываются сразу, откройте соответствующий лог из папки logs.)
 
 rem -------- Launch server in its own window (kept open) --------
 set "SCRIPT_DIR=%cd%"

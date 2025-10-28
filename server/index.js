@@ -14,8 +14,9 @@ const {
 const readFile = promisify(fs.readFile);
 const access = promisify(fs.access);
 
-const requestedPort = parsePort(process.env.PORT, 3000);
-const candidatePorts = buildPortList(requestedPort);
+const DEFAULT_PORT = 80;
+const requestedPort = parsePort(process.env.PORT, DEFAULT_PORT);
+const candidatePorts = buildPortList(requestedPort, DEFAULT_PORT);
 let booting = true;
 let lastPortAttempted = null;
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -277,9 +278,12 @@ function parsePort(value, fallback) {
   return fallback;
 }
 
-function buildPortList(primary) {
+function buildPortList(primary, fallback) {
   const ports = [primary];
-  if (primary !== 3000) {
+  if (primary !== fallback) {
+    ports.push(fallback);
+  }
+  if (primary !== 3000 && fallback !== 3000) {
     ports.push(3000);
   }
   ports.push(0);
