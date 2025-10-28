@@ -1,205 +1,194 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { promisify } = require('util');
 const WebSocket = require('ws');
+const {
+  createRoom,
+  getRoom,
+  listRooms,
+  pruneRooms,
+  ensureDefaultRooms,
+} = require('./functions/roomManager');
+
+const readFile = promisify(fs.readFile);
+const access = promisify(fs.access);
 
 const PORT = process.env.PORT || 3000;
+const ROOT_DIR = path.resolve(__dirname, '..');
+const STATIC_DIRS = new Set(['styles', 'scripts', 'assets']);
 
-// Create HTTP server
-const server = http.createServer((req, res) => {
-  // Sanitize URL to prevent path traversal
-  let requestPath = req.url.split('?')[0]; // Remove query parameters
-  
-  let filePath = './public/index.html';
-  if (requestPath === '/') {
-    filePath = './public/index.html';
-  } else if (requestPath.startsWith('/js/')) {
-    filePath = './public' + requestPath;
-  } else if (requestPath.startsWith('/css/')) {
-    filePath = './public' + requestPath;
-  } else {
-    // Default to index.html for unknown paths
-    filePath = './public/index.html';
-  }
+ensureDefaultRooms();
+setInterval(() => pruneRooms(), 60 * 1000);
 
-  // Resolve the file path and ensure it's within the public directory
-  const publicDir = path.resolve(__dirname, '../public');
-  const resolvedPath = path.resolve(filePath);
-  
-  // Check if the resolved path is within the public directory
-  if (!resolvedPath.startsWith(publicDir)) {
-    res.writeHead(403);
-    res.end('403 - Forbidden');
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (req.method === 'GET' && url.pathname === '/rooms') {
+    const rooms = listRooms();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(rooms));
     return;
   }
 
-  const extname = String(path.extname(filePath)).toLowerCase();
-  const mimeTypes = {
-    '.html': 'text/html',
-    '.js': 'text/javascript',
-    '.css': 'text/css',
-    '.json': 'application/json',
-    '.png': 'image/png',
-    '.jpg': 'image/jpg',
-    '.gif': 'image/gif',
-  };
-
-  const contentType = mimeTypes[extname] || 'application/octet-stream';
-
-  fs.readFile(resolvedPath, (error, content) => {
-    if (error) {
-      if (error.code === 'ENOENT') {
-        res.writeHead(404);
-        res.end('404 - File Not Found');
-      } else {
-        res.writeHead(500);
-        res.end('500 - Internal Server Error: ' + error.code);
-      }
-    } else {
-      res.writeHead(200, { 'Content-Type': contentType });
-      res.end(content, 'utf-8');
+  if (req.method === 'POST' && url.pathname === '/rooms') {
+    try {
+      const body = await readRequestBody(req);
+      const payload = JSON.parse(body || '{}');
+      const name = typeof payload.name === 'string' ? payload.name : '';
+      const room = createRoom({ name: sanitizeName(name).slice(0, 24) });
+      const info = room.getLobbyInfo();
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(info));
+    } catch (error) {
+      console.error('Failed to create room', error);
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Не удалось создать комнату');
     }
-  });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok' }));
+    return;
+  }
+
+  serveStatic(url.pathname, res);
 });
 
-// Create WebSocket server
 const wss = new WebSocket.Server({ server });
 
-// Game state
-const gameState = {
-  players: {},
-  bullets: [],
-  nextBulletId: 0
-};
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const roomId = url.searchParams.get('room');
+  const playerName = sanitizeName(url.searchParams.get('name') || '');
 
-const GAME_WIDTH = 800;
-const GAME_HEIGHT = 600;
-const PLAYER_SIZE = 30;
-const BULLET_SIZE = 5;
-const BULLET_SPEED = 10;
+  if (!roomId) {
+    sendAndClose(ws, { type: 'error', message: 'Комната не указана' }, 1008);
+    return;
+  }
 
-// Game loop - update bullets and check collisions
-setInterval(() => {
-  // Update bullets
-  gameState.bullets = gameState.bullets.filter(bullet => {
-    bullet.x += Math.cos(bullet.angle) * BULLET_SPEED;
-    bullet.y += Math.sin(bullet.angle) * BULLET_SPEED;
-    
-    // Remove bullets that are out of bounds
-    if (bullet.x < 0 || bullet.x > GAME_WIDTH || bullet.y < 0 || bullet.y > GAME_HEIGHT) {
-      return false;
-    }
-    
-    // Check collision with players
-    for (const playerId in gameState.players) {
-      if (playerId === bullet.playerId) continue;
-      
-      const player = gameState.players[playerId];
-      const dx = player.x - bullet.x;
-      const dy = player.y - bullet.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      
-      if (distance < PLAYER_SIZE / 2 + BULLET_SIZE) {
-        // Hit detected
-        player.health -= 20;
-        if (player.health <= 0) {
-          player.health = 0;
-          player.alive = false;
-        }
-        return false; // Remove bullet
-      }
-    }
-    
-    return true;
-  });
-  
-  // Broadcast game state to all clients
-  broadcastGameState();
-}, 1000 / 30); // 30 FPS
+  const room = getRoom(roomId);
+  if (!room) {
+    sendAndClose(ws, { type: 'error', message: 'Комната не найдена' }, 1008);
+    return;
+  }
 
-function broadcastGameState() {
-  const state = JSON.stringify({
-    type: 'gameState',
-    players: gameState.players,
-    bullets: gameState.bullets
-  });
-  
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(state);
-    }
-  });
-}
+  if (room.isFull()) {
+    sendAndClose(ws, { type: 'error', message: 'Комната заполнена' }, 1008);
+    return;
+  }
 
-wss.on('connection', (ws) => {
-  const playerId = generateId();
-  console.log(`Player ${playerId} connected`);
-  
-  // Initialize player
-  gameState.players[playerId] = {
-    id: playerId,
-    x: Math.random() * (GAME_WIDTH - PLAYER_SIZE) + PLAYER_SIZE / 2,
-    y: Math.random() * (GAME_HEIGHT - PLAYER_SIZE) + PLAYER_SIZE / 2,
-    angle: 0,
-    health: 100,
-    alive: true,
-    score: 0
-  };
-  
-  // Send player ID
-  ws.send(JSON.stringify({
-    type: 'init',
-    playerId: playerId
-  }));
-  
-  // Handle messages from client
-  ws.on('message', (message) => {
-    try {
-      const data = JSON.parse(message);
-      
-      if (data.type === 'move') {
-        const player = gameState.players[playerId];
-        if (player && player.alive) {
-          player.x = Math.max(PLAYER_SIZE / 2, Math.min(GAME_WIDTH - PLAYER_SIZE / 2, data.x));
-          player.y = Math.max(PLAYER_SIZE / 2, Math.min(GAME_HEIGHT - PLAYER_SIZE / 2, data.y));
-          player.angle = data.angle;
-        }
-      } else if (data.type === 'shoot') {
-        const player = gameState.players[playerId];
-        if (player && player.alive) {
-          gameState.bullets.push({
-            id: gameState.nextBulletId++,
-            x: player.x,
-            y: player.y,
-            angle: player.angle,
-            playerId: playerId
-          });
-        }
-      } else if (data.type === 'respawn') {
-        const player = gameState.players[playerId];
-        if (player && !player.alive) {
-          player.x = Math.random() * (GAME_WIDTH - PLAYER_SIZE) + PLAYER_SIZE / 2;
-          player.y = Math.random() * (GAME_HEIGHT - PLAYER_SIZE) + PLAYER_SIZE / 2;
-          player.health = 100;
-          player.alive = true;
-        }
-      }
-    } catch (e) {
-      console.error('Error parsing message:', e);
-    }
+  let playerId;
+  try {
+    playerId = room.attachClient(ws, playerName);
+  } catch (error) {
+    console.error('Attach client error', error);
+    sendAndClose(ws, { type: 'error', message: 'Не удалось присоединиться' }, 1011);
+    return;
+  }
+
+  ws.on('message', (data) => {
+    room.handleMessage(playerId, data);
   });
-  
-  // Handle disconnect
+
   ws.on('close', () => {
-    console.log(`Player ${playerId} disconnected`);
-    delete gameState.players[playerId];
+    room.detachClient(playerId);
+  });
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error', error);
+    room.detachClient(playerId);
   });
 });
-
-function generateId() {
-  return Math.random().toString(36).substr(2, 9);
-}
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
+async function serveStatic(requestPath, res) {
+  let filePath;
+  if (requestPath === '/' || requestPath === '') {
+    filePath = path.join(ROOT_DIR, 'index.html');
+  } else {
+    const cleanPath = requestPath.replace(/\.\.+/g, '');
+    const segments = cleanPath.split('/').filter(Boolean);
+    if (segments.length && STATIC_DIRS.has(segments[0])) {
+      filePath = path.join(ROOT_DIR, ...segments);
+    } else {
+      filePath = path.join(ROOT_DIR, cleanPath);
+    }
+  }
+
+  try {
+    const resolved = path.resolve(filePath);
+    if (!resolved.startsWith(ROOT_DIR)) {
+      throw new Error('Forbidden');
+    }
+    await access(resolved, fs.constants.R_OK);
+    const ext = path.extname(resolved).toLowerCase();
+    const mimeType = getMimeType(ext);
+    const content = await readFile(resolved);
+    res.writeHead(200, { 'Content-Type': mimeType });
+    res.end(content);
+  } catch (error) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Файл не найден');
+  }
+}
+
+function getMimeType(ext) {
+  switch (ext) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.js':
+      return 'application/javascript; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.svg':
+      return 'image/svg+xml';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+async function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 1e6) {
+        req.destroy();
+        reject(new Error('Body too large'));
+      }
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', (error) => reject(error));
+  });
+}
+
+function sanitizeName(value) {
+  return (value || '')
+    .toString()
+    .replace(/[^a-zA-Z0-9а-яА-Я_\-\s]/g, '')
+    .trim()
+    .slice(0, 20);
+}
+
+function sendAndClose(ws, payload, code = 1000) {
+  try {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(payload));
+    }
+    ws.close(code);
+  } catch (error) {
+    // ignore
+  }
+}

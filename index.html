@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crossline // WebCore Edition</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles/main.css" />
+</head>
+<body>
+  <div class="background-grid"></div>
+  <main id="lobby" class="lobby">
+    <header class="lobby__header">
+      <div class="brand">
+        <span class="brand__tag">crossline</span>
+        <h1 class="brand__title">WebCore Arena</h1>
+        <p class="brand__subtitle">мгновенные дуэли в браузере</p>
+      </div>
+      <div class="profile">
+        <label for="player-name" class="profile__label">Никнейм</label>
+        <input id="player-name" class="profile__input" type="text" maxlength="16" placeholder="Неон" />
+      </div>
+    </header>
+    <section class="lobby__grid">
+      <section class="panel panel--rooms">
+        <div class="panel__header">
+          <h2>Комнаты</h2>
+          <button id="refresh-rooms" class="button button--ghost" type="button">Обновить</button>
+        </div>
+        <div id="rooms-list" class="rooms-list" aria-live="polite"></div>
+        <form id="create-room-form" class="panel__form">
+          <label class="panel__label" for="room-name">Создать комнату</label>
+          <div class="panel__row">
+            <input id="room-name" class="panel__input" type="text" maxlength="24" placeholder="Hyperlane" />
+            <button class="button" type="submit">Старт</button>
+          </div>
+        </form>
+      </section>
+      <section class="panel panel--modes">
+        <div class="panel__header">
+          <h2>Режимы</h2>
+        </div>
+        <div class="mode-card" data-mode="offline">
+          <h3>Офлайн с ботом</h3>
+          <p>Отточите реакцию против синтетического соперника. Работает даже без сервера.</p>
+          <div class="mode-card__controls">
+            <label for="offline-difficulty">Сложность</label>
+            <select id="offline-difficulty">
+              <option value="easy">Easy</option>
+              <option value="normal" selected>Normal</option>
+              <option value="hard">Hard</option>
+            </select>
+          </div>
+          <button id="play-offline" class="button button--primary" type="button">Играть офлайн</button>
+        </div>
+        <div class="mode-card" data-mode="online">
+          <h3>Онлайн арена</h3>
+          <p>Подключайтесь к живым игрокам и сражайтесь в реальном времени.</p>
+          <button id="play-online" class="button button--primary" type="button" disabled>Присоединиться</button>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <section id="game-stage" class="game hidden">
+    <header class="game__hud">
+      <div class="hud hud--status">
+        <span id="mode-label" class="hud__tag">—</span>
+        <span id="status-text" class="hud__status">загрузка…</span>
+      </div>
+      <div class="hud hud--health">
+        <span class="hud__label">hp</span>
+        <div class="hud__bar">
+          <div id="health-fill" class="hud__bar-fill"></div>
+        </div>
+        <span id="health-value" class="hud__value">100</span>
+      </div>
+      <div class="hud hud--score">
+        <span class="hud__label">score</span>
+        <ul id="scoreboard" class="scoreboard"></ul>
+      </div>
+      <button id="leave-game" class="button button--ghost" type="button">В лобби</button>
+    </header>
+    <div class="game__canvas-wrapper">
+      <canvas id="game-canvas" width="960" height="540" role="img" aria-label="Игровое поле"></canvas>
+      <div id="respawn-overlay" class="overlay hidden">
+        <h2>Вы выбиты</h2>
+        <p>Ожидайте перезапуск или нажмите респаун.</p>
+        <button id="respawn-btn" class="button button--primary" type="button">Респаун</button>
+      </div>
+    </div>
+    <footer class="game__footer">
+      <div class="tips">
+        <span>WASD — движение</span>
+        <span>Мышь / тап — прицеливание</span>
+        <span>Клик / FIRE — выстрел</span>
+      </div>
+    </footer>
+    <div id="mobile-controls" class="mobile-controls">
+      <div class="mobile-controls__dpad">
+        <button data-key="w" class="mobile-key">▲</button>
+        <div class="mobile-controls__dpad-row">
+          <button data-key="a" class="mobile-key">◀</button>
+          <button data-key="s" class="mobile-key">▼</button>
+          <button data-key="d" class="mobile-key">▶</button>
+        </div>
+      </div>
+      <button id="mobile-fire" class="mobile-fire">FIRE</button>
+    </div>
+  </section>
+
+  <template id="room-template">
+    <article class="room-card">
+      <div class="room-card__info">
+        <h3 class="room-card__title"></h3>
+        <p class="room-card__meta"></p>
+      </div>
+      <button class="button room-card__join" type="button">Войти</button>
+    </article>
+  </template>
+
+  <script type="module" src="./scripts/main.js"></script>
+</body>
+</html>
