@@ -11,6 +11,8 @@ call :requireCmd node "Node.js"
 if errorlevel 1 goto :eof
 call :requireCmd npm "npm"
 if errorlevel 1 goto :eof
+call :requireCmd powershell "PowerShell"
+if errorlevel 1 goto :eof
 
 call :resolveNgrok
 if errorlevel 1 goto :eof
@@ -37,30 +39,30 @@ start "Crossline Ngrok" cmd /k "cd /d \"%PROJECT_DIR%\" && \"%NGROK_CMD%\" http 
 
 echo [INFO] Waiting for ngrok tunnel on http://127.0.0.1:4040 ...
 set "TUNNEL_URL="
-for /L %%I in (1,30) do (
-  for /f "usebackq tokens=* delims=" %%A in (`powershell -NoLogo -NoProfile -Command "try { $resp = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -TimeoutSec 2; $https = $resp.tunnels | Where-Object { $_.proto -eq 'https' } | Select-Object -First 1; if ($https) { $https.public_url } } catch { }" 2^>nul`) do (
-    set "TUNNEL_URL=%%A"
-  )
-  if defined TUNNEL_URL goto GotTunnel
-  timeout /t 2 >nul
+set "WS_URL="
+set "CONFIG_PATH="
+for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\scripts\update-runtime-config.ps1" -ProjectDir "%PROJECT_DIR%" -TimeoutSeconds 120 2^>nul`) do (
+  if /I "%%A"=="TUNNEL_URL" set "TUNNEL_URL=%%B"
+  if /I "%%A"=="WS_URL" set "WS_URL=%%B"
+  if /I "%%A"=="CONFIG_PATH" set "CONFIG_PATH=%%B"
 )
 
-echo [WARN] Не удалось определить публичный адрес ngrok.
-exit /b 1
+if not defined TUNNEL_URL (
+  echo [WARN] Не удалось определить публичный адрес ngrok.
+  exit /b 1
+)
 
-:GotTunnel
 echo [INFO] Найден туннель: %TUNNEL_URL%
 
-for /f "usebackq tokens=* delims=" %%A in (`powershell -NoLogo -NoProfile -Command "$origin = '%TUNNEL_URL%'; $uri = [Uri]$origin; $wsScheme = if ($uri.Scheme -eq 'https') { 'wss://' } else { 'ws://' }; $ws = $wsScheme + $uri.Authority; $configPath = [IO.Path]::Combine('%PROJECT_DIR%','scripts','runtime-config.js'); $lines = @('(function setCrosslineConfig() {','  const tunnelOrigin = ''' + $origin + ''';','  if (!tunnelOrigin) return;','  window.CROSSLINE_API_URL = tunnelOrigin;','  try {','    const parsed = new URL(tunnelOrigin);','    const wsProtocol = parsed.protocol === ''https:'' ? ''wss:'' : ''ws:'';','    window.CROSSLINE_WS_URL = `${wsProtocol}//${parsed.host}`;','  } catch (error) {','    console.warn(''WS URL config error'', error);','  }','})();'); [IO.File]::WriteAllLines($configPath, $lines); $ws" 2^>nul`) do (
-  set "WS_URL=%%A"
+if defined CONFIG_PATH (
+  echo [INFO] Runtime config updated: %CONFIG_PATH%
 )
 
-if not defined WS_URL (
-  echo [WARN] Не удалось вычислить WebSocket URL.
-) else (
-  echo [INFO] Runtime config updated: %PROJECT_DIR%\scripts\runtime-config.js
+if defined WS_URL (
   echo [READY] HTTP  -> %TUNNEL_URL%
   echo [READY] WS    -> %WS_URL%
+) else (
+  echo [WARN] Не удалось вычислить WebSocket URL.
 )
 
 echo.
