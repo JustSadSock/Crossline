@@ -9,7 +9,7 @@ if not defined PORT set "PORT=3000"
 
 set "PS_SCRIPT=%SCRIPT_DIR%\scripts\launch-crossline.ps1"
 if not exist "%PS_SCRIPT%" (
-  echo [ERROR] Не найден файл %PS_SCRIPT%
+  echo [ERROR] Missing file %PS_SCRIPT%
   exit /b 1
 )
 

@@ -9,7 +9,7 @@ Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
 $resolvedProjectDir = (Resolve-Path -Path $ProjectDir).ProviderPath
-Write-Host ("[INFO] Каталог проекта: {0}" -f $resolvedProjectDir)
+Write-Host "[INFO] Project directory: $resolvedProjectDir"
 
 function Require-Command {
     param(
@@ -23,7 +23,7 @@ function Require-Command {
     }
 
     if (-not (Get-Command -Name $Name -ErrorAction SilentlyContinue)) {
-        throw ("{0} ({1}) не найден в PATH." -f $FriendlyName, $Name)
+        throw "$FriendlyName ($Name) was not found in PATH."
     }
 }
 
@@ -34,7 +34,7 @@ function Resolve-Ngrok {
             return (Resolve-Path -Path $candidate).ProviderPath
         }
 
-        Write-Warning ("NGROK_EXE указывает на несуществующий файл: {0}" -f $candidate)
+        Write-Warning "NGROK_EXE points to a missing file: $candidate"
     }
 
     $command = Get-Command -Name 'ngrok' -ErrorAction SilentlyContinue
@@ -42,61 +42,61 @@ function Resolve-Ngrok {
         return $command.Path
     }
 
-    throw 'ngrok не найден. Установите его и добавьте в PATH либо задайте NGROK_EXE.'
+    throw 'ngrok was not found. Install it, add it to PATH, or set NGROK_EXE.'
 }
 
 Require-Command -Name 'node' -FriendlyName 'Node.js'
 Require-Command -Name 'npm'
 $ngrokExe = Resolve-Ngrok
-Write-Host ("[INFO] Используется ngrok: {0}" -f $ngrokExe)
+Write-Host "[INFO] Using ngrok: $ngrokExe"
 
 if ($env:NGROK_AUTHTOKEN) {
     try {
         & $ngrokExe config add-authtoken $env:NGROK_AUTHTOKEN | Out-Null
-        Write-Host '[INFO] Токен ngrok применён.'
+        Write-Host '[INFO] Applied NGROK_AUTHTOKEN.'
     } catch {
-        Write-Warning ("Не удалось применить NGROK_AUTHTOKEN: {0}" -f $_.Exception.Message)
+        Write-Warning "Failed to apply NGROK_AUTHTOKEN: $($_.Exception.Message)"
     }
 } else {
-    Write-Warning 'NGROK_AUTHTOKEN не задан. При необходимости авторизуйте ngrok вручную.'
+    Write-Warning 'NGROK_AUTHTOKEN is not set. Authorise ngrok manually if required.'
 }
 
 $nodeModules = Join-Path -Path $resolvedProjectDir -ChildPath 'node_modules'
 if (-not (Test-Path -Path $nodeModules)) {
-    Write-Host '[STEP] Установка зависимостей (npm ci)...'
+    Write-Host '[STEP] Installing dependencies (npm ci)...'
     Push-Location -Path $resolvedProjectDir
     try {
         & npm ci
         if ($LASTEXITCODE -ne 0) {
-            throw ("npm ci завершился с ошибкой (код {0})." -f $LASTEXITCODE)
+            throw "npm ci failed with exit code $LASTEXITCODE."
         }
     } finally {
         Pop-Location
     }
 } else {
-    Write-Host '[INFO] node_modules найден. Пропускаем npm ci.'
+    Write-Host '[INFO] node_modules found. Skipping npm ci.'
 }
 
-$env:PORT = $Port
+$env:PORT = "$Port"
 
 $serverArgs = @(
     '/k',
-    ('title Crossline API & set PORT={0} & node server/index.js' -f $Port)
+    "title Crossline API `& set PORT=$Port `& node server/index.js"
 )
-Write-Host ("[STEP] Запуск локального сервера на http://localhost:{0} ..." -f $Port)
+Write-Host "[STEP] Starting local server on http://localhost:$Port ..."
 $serverProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList $serverArgs -WorkingDirectory $resolvedProjectDir -PassThru -WindowStyle Normal
 
 $ngrokArgs = @(
     '/k',
-    ('title Crossline Ngrok & "{0}" http {1} --host-header=localhost:{1}' -f $ngrokExe, $Port)
+    "title Crossline Ngrok `& `"$ngrokExe`" http $Port --host-header=localhost:$Port"
 )
-Write-Host '[STEP] Запуск ngrok туннеля...'
+Write-Host '[STEP] Starting ngrok tunnel...'
 $ngrokProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList $ngrokArgs -WorkingDirectory $resolvedProjectDir -PassThru -WindowStyle Normal
 
-Write-Host ("[INFO] Ожидание публичного адреса от ngrok (до {0} с)..." -f $TunnelTimeoutSeconds)
+Write-Host "[INFO] Waiting for ngrok public URL (timeout: $TunnelTimeoutSeconds s)..."
 $updateScript = Join-Path -Path $resolvedProjectDir -ChildPath 'scripts/update-runtime-config.ps1'
 if (-not (Test-Path -Path $updateScript)) {
-    throw ("Не найден файл {0}" -f $updateScript)
+    throw "Missing script: $updateScript"
 }
 
 $tunnelInfoLines = & $updateScript -ProjectDir $resolvedProjectDir -TimeoutSeconds $TunnelTimeoutSeconds
@@ -111,7 +111,7 @@ foreach ($line in $tunnelInfoLines) {
 }
 
 if (-not $tunnelInfo.ContainsKey('TUNNEL_URL')) {
-    throw 'Скрипт обновления не вернул публичный адрес ngrok.'
+    throw 'Runtime config updater did not return a public ngrok URL.'
 }
 
 $publicUrl = $tunnelInfo['TUNNEL_URL']
@@ -121,19 +121,19 @@ if ($tunnelInfo.ContainsKey('WS_URL')) {
     $wsUrl = $tunnelInfo['WS_URL']
 }
 
-Write-Host ("[READY] HTTP  -> {0}" -f $publicUrl) -ForegroundColor Green
+Write-Host "[READY] HTTP  -> $publicUrl" -ForegroundColor Green
 if ($wsUrl) {
-    Write-Host ("[READY] WS    -> {0}" -f $wsUrl) -ForegroundColor Green
+    Write-Host "[READY] WS    -> $wsUrl" -ForegroundColor Green
 }
 if ($configPath) {
-    Write-Host ("[INFO] Runtime config: {0}" -f $configPath) -ForegroundColor Cyan
+    Write-Host "[INFO] Runtime config: $configPath" -ForegroundColor Cyan
 }
 
-Write-Host '[HINT] Используйте этот адрес в настройках Netlify или переменных окружения CROSSLINE_API_URL / CROSSLINE_WS_URL.' -ForegroundColor Yellow
+Write-Host '[HINT] Use this address for Netlify or the CROSSLINE_API_URL / CROSSLINE_WS_URL variables.' -ForegroundColor Yellow
 
 $monitorScript = Join-Path -Path $resolvedProjectDir -ChildPath 'monitor-server.ps1'
 if (Test-Path -Path $monitorScript) {
-    Write-Host '[STEP] Запуск окна мониторинга сервера...'
+    Write-Host '[STEP] Launching server monitor window...'
     $monitorArgs = @(
         '-NoExit',
         '-NoLogo',
@@ -142,9 +142,9 @@ if (Test-Path -Path $monitorScript) {
     )
     Start-Process -FilePath 'powershell.exe' -ArgumentList $monitorArgs -WorkingDirectory $resolvedProjectDir -WindowStyle Normal | Out-Null
 } else {
-    Write-Warning 'monitor-server.ps1 не найден, мониторинг не запущен.'
+    Write-Warning 'monitor-server.ps1 was not found. Skipping monitor launch.'
 }
 
-Write-Host '[DONE] Все процессы запущены. Не закрывайте созданные окна, пока игра работает.' -ForegroundColor Magenta
+Write-Host '[DONE] All processes are running. Keep the windows open while the game is active.' -ForegroundColor Magenta
 
 exit 0
