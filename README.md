@@ -54,6 +54,23 @@ npm install
 
 ## Running the Game
 
+### On Windows with ngrok
+
+For easy setup with ngrok tunneling (recommended for multiplayer):
+```bash
+start-server.bat
+```
+
+This will:
+- Install dependencies
+- Start the Node.js server on port 80 (or 3000 if admin rights not available)
+- Start ngrok tunnel for external access
+- Open console windows showing server and ngrok output
+
+**Note:** Edit `start-server.bat` to set your ngrok.exe path before running.
+
+### Manual Start
+
 Start the server:
 ```bash
 npm start
