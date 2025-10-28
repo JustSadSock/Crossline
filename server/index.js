@@ -14,7 +14,7 @@ const {
 const readFile = promisify(fs.readFile);
 const access = promisify(fs.access);
 
-const DEFAULT_PORT = 80;
+const DEFAULT_PORT = 3000;
 const requestedPort = parsePort(process.env.PORT, DEFAULT_PORT);
 const candidatePorts = buildPortList(requestedPort, DEFAULT_PORT);
 let booting = true;
