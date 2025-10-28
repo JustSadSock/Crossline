@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 rem ===== Crossline: zero-input launcher (server + ngrok + deps) =====
@@ -72,11 +73,9 @@ if not "%FOUND_TOKEN%"=="" (
 
 rem -------- Prepare logs --------
 if not exist "logs" mkdir "logs"
-set "TS=%DATE%_%TIME%"
-set "TS=%TS::=-%"
-set "TS=%TS:/=-%"
-set "TS=%TS: =_%"
-set "TS=%TS:.=-%"
+for /f "tokens=1-4 delims=.:-/ " %%%%a in ("%date% %time%") do (
+    set "TS=%%%%d%%%%c%%%%b_%%%%a"
+)
 set "SERVER_LOG=logs\server_%TS%.log"
 set "NGROK_LOG=logs\ngrok_%TS%.log"
 
