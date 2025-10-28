@@ -307,8 +307,41 @@ function isBindError(error) {
 }
 
 function applyCors(req, res) {
-  const allowedOrigin = process.env.CROSSLINE_CORS_ORIGIN || '*';
-  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  const rawOrigin = process.env.CROSSLINE_CORS_ORIGIN || '*';
+  const allowedOrigins = rawOrigin
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => {
+      if (value === '*') {
+        return '*';
+      }
+      return value.replace(/\/+$/, '');
+    })
+    .filter(Boolean);
+  const allowAll = allowedOrigins.length === 0 || allowedOrigins.includes('*');
+
+  if (!allowAll) {
+    appendVaryHeader(res, 'Origin');
+    const requestOrigin = req.headers.origin;
+    if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+    } else if (requestOrigin) {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+      } else {
+        res.writeHead(403);
+        res.end('Недопустимый источник CORS');
+      }
+      return true;
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', allowedOrigins[0]);
+    }
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Allow-Credentials', 'false');
@@ -320,4 +353,23 @@ function applyCors(req, res) {
   }
 
   return false;
+}
+
+function appendVaryHeader(res, value) {
+  const existing = res.getHeader('Vary');
+  if (!existing) {
+    res.setHeader('Vary', value);
+    return;
+  }
+
+  const current = Array.isArray(existing) ? existing.join(',') : String(existing);
+  const values = current
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (!values.includes(value)) {
+    values.push(value);
+    res.setHeader('Vary', values.join(', '));
+  }
 }
