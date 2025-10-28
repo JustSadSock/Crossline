@@ -22,14 +22,14 @@ if errorlevel 1 (
 echo Launching Crossline server on port %PORT%...
 start "Crossline Server" cmd /k "set PORT=%PORT% && node server/index.js"
 
-ngrok config add-authtoken %NGROK_AUTHTOKEN% >nul 2>&1
-if errorlevel 1 (
-  echo [ERROR] Failed to configure ngrok auth token.
+echo Starting ngrok tunnel manager...
+set "NGROK_SCRIPT=%~dp0scripts\ngrok-launcher.bat"
+if not exist "%NGROK_SCRIPT%" (
+  echo [ERROR] Missing ngrok helper script at %NGROK_SCRIPT%.
   exit /b 1
 )
 
-echo Starting ngrok tunnel for http://localhost:%PORT% ...
-start "ngrok Tunnel" cmd /k "ngrok http %PORT%"
+start "ngrok Tunnel" cmd /k "call \"%NGROK_SCRIPT%\" %PORT%"
 
 echo.
 echo Crossline server and ngrok tunnel have been launched in separate windows.
