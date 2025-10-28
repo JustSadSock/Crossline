@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-
-rem ===== Crossline: zero-input launcher (server + ngrok + deps) =====
+chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 
+<<<<<<< Updated upstream
 rem -------- Settings (edit once if you want) --------
 if not defined PORT set "PORT=3000"
 if not defined NGROK_EXE set "NGROK_EXE=ngrok"
@@ -56,42 +56,61 @@ set "TS=%TS::=-%"
 set "TS=%TS:/=-%"
 set "TS=%TS: =_%"
 set "TS=%TS:.=-%"
+=======
+rem ========= CONFIG =========
+set "PORT=80"
+set "NGROK_EXE=C:\Users\illya\AppData\Local\Microsoft\WinGet\Links\ngrok.exe"
+
+rem ========= LOGS =========
+if not exist "logs" mkdir "logs"
+for /f %%t in ('powershell -NoProfile -Command "(Get-Date).ToString('yyyyMMdd_HHmmss')"') do set "TS=%%t"
+>>>>>>> Stashed changes
 set "SERVER_LOG=logs\server_%TS%.log"
 set "NGROK_LOG=logs\ngrok_%TS%.log"
 
-rem -------- Ensure deps (no questions) --------
-if not exist "package.json" (
-  echo [WARN] package.json not found. Creating minimal one.
-  call npm init -y >nul 2>&1
-)
-
-if not exist "node_modules" (
-  if exist "package-lock.json" (
-    call npm ci
-  ) else (
-    call npm install
+rem ========= PORT CHECK =========
+if %PORT% LSS 1024 (
+  net session >nul 2>&1
+  if errorlevel 1 (
+    echo [WARN] Port %PORT% needs admin. Falling back to 3000.
+    set "PORT=3000"
   )
 )
+echo [INFO] Using port %PORT%.
 
-rem Ensure 'ws' present (your server requires it)
-node -e "require('ws')" >nul 2>&1
-if errorlevel 1 (
-  call npm i ws
+rem ========= NODE / NPM =========
+where node >nul 2>&1 || (
+  echo [ERROR] Node.js not found in PATH. Install Node LTS.
+  pause & exit /b
+)
+if exist package.json (
+  echo [INFO] npm ci...
+  npm ci >>"%SERVER_LOG%" 2>&1
 )
 
-rem -------- Choose server command --------
-set "SERVER_CMD="
-if exist "server\index.js" set "SERVER_CMD=node server\index.js"
-if "%SERVER_CMD%"=="" if exist "package.json" set "SERVER_CMD=npm start"
-if "%SERVER_CMD%"=="" (
-  echo [ERROR] No server\index.js or package.json. Nothing to run.
-  pause
-  exit /b 1
+rem ========= NGROK =========
+if exist "%NGROK_EXE%" (
+  echo [INFO] Using ngrok at "%NGROK_EXE%"
+) else (
+  echo [ERROR] ngrok not found at "%NGROK_EXE%"
+  echo   Fix: set "NGROK_EXE=C:\Path\to\ngrok.exe"
+  pause & exit /b 1
 )
 
-echo Logs:
+rem ========= START SERVER =========
+set "SCRIPT_DIR=%cd%"
+start "Crossline Server" cmd /k ^
+"cd /d "%SCRIPT_DIR%" && set PORT=%PORT% && node server\index.js 1>>"%SERVER_LOG%" 2>>&1"
+
+rem ========= START NGROK =========
+start "ngrok Tunnel" cmd /k ^
+"cd /d "%SCRIPT_DIR%" && "%NGROK_EXE%" http %PORT% --log=stdout 1>>"%NGROK_LOG%" 2>>&1"
+
+echo [READY] Server and ngrok launched.
+echo [INFO] Logs:
 echo   %SERVER_LOG%
 echo   %NGROK_LOG%
+<<<<<<< Updated upstream
 echo Starting server on http://localhost:%PORT%
 
 rem -------- Launch server in its own window (kept open) --------
@@ -102,5 +121,7 @@ echo Starting ngrok tunnel to localhost:%PORT%
 start "ngrok Tunnel" cmd /k ""%NGROK_CMD%" http %PORT% --log=stdout ^>^> ^"%NGROK_LOG%^" 2^>^&1"
 
 echo Ready. Child consoles stay open. You can close this parent window anytime.
+=======
+>>>>>>> Stashed changes
 pause
 endlocal
