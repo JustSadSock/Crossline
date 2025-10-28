@@ -1,17 +1,45 @@
-(function setCrosslineConfig() {
-  // Поставь сюда свой текущий ngrok-URL
-  const tunnelOrigin = 'https://7e3199ebec98.ngrok-free.app';
+(function setCrosslineConfig(globalObject) {
+  const urlParams = (() => {
+    const locationSearch = globalObject?.location?.search;
+    if (!locationSearch) return null;
+    try { return new URLSearchParams(locationSearch); }
+    catch (_) { return null; }
+  })();
 
-  if (!tunnelOrigin) return;
+  const fromProcessEnv = (name) => {
+    if (typeof process === 'undefined' || !process?.env) return undefined;
+    return process.env[name];
+  };
 
-  // HTTP API
-  window.CROSSLINE_API_URL = tunnelOrigin;
+  const apiOrigin =
+    (urlParams && urlParams.get('server')) ||
+    globalObject?.CROSSLINE_API_URL ||
+    fromProcessEnv('CROSSLINE_API_URL') ||
+    '';
 
-  // WS = wss://<host> (для https)
+  const wsOriginExplicit =
+    (urlParams && urlParams.get('ws')) ||
+    globalObject?.CROSSLINE_WS_URL ||
+    fromProcessEnv('CROSSLINE_WS_URL') ||
+    '';
+
+  if (apiOrigin) {
+    globalObject.CROSSLINE_API_URL = apiOrigin;
+  }
+
+  if (wsOriginExplicit) {
+    globalObject.CROSSLINE_WS_URL = wsOriginExplicit;
+    return;
+  }
+
+  if (!apiOrigin) return;
+
   try {
-    const parsed = new URL(tunnelOrigin);
+    const parsed = new URL(apiOrigin);
     const wsProtocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    window.CROSSLINE_WS_URL = `${wsProtocol}//${parsed.host}`;
-  } catch (e) { console.warn('WS URL config error', e); }
-})();
+    globalObject.CROSSLINE_WS_URL = `${wsProtocol}//${parsed.host}`;
+  } catch (e) {
+    console.warn('WS URL config error', e);
+  }
+})(typeof window !== 'undefined' ? window : globalThis);
 

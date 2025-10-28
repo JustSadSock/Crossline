@@ -76,8 +76,8 @@ timeout /t 3 /nobreak >nul
 
 echo.
 rem ===== START NGROK =====
-echo [STEP] Запуск ngrok туннеля...
-start "Crossline Tunnel" cmd /k "cd /d \"%SCRIPT_DIR%\" && %NGROK_CMD% http %PORT% --log=stdout"
+echo [STEP] Запуск ngrok туннеля (только HTTPS)...
+start "Crossline Tunnel" cmd /k "cd /d \"%SCRIPT_DIR%\" && %NGROK_CMD% http %PORT% --scheme=https --log=stdout"
 if errorlevel 1 (
   echo [ERROR] Не удалось запустить ngrok.
   goto :EOF
