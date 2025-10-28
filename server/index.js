@@ -3,7 +3,7 @@ const path = require('path');
 const cluster = require('cluster');
 const os = require('os');
 const { promisify } = require('util');
-const uWS = require('uWebSockets.js');
+const uWS = loadUWebSockets();
 const {
   createRoom,
   getRoom,
@@ -58,6 +58,25 @@ function bootstrap() {
   }
 
   startServer();
+}
+
+function loadUWebSockets() {
+  try {
+    return require('uWebSockets.js');
+  } catch (error) {
+    if (error && error.code === 'MODULE_NOT_FOUND') {
+      const message = [
+        "[BOOT] The optional dependency 'uWebSockets.js' is missing.",
+        '[BOOT] Install project dependencies before starting the server.',
+        '[BOOT] Run "npm ci" (or "npm install") from the repository root,',
+        '       or use launch-crossline.bat / scripts/launch-crossline.ps1 on Windows.',
+      ].join('\n');
+      console.error(message);
+      process.exitCode = 1;
+      process.exit();
+    }
+    throw error;
+  }
 }
 
 function startServer() {
