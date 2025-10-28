@@ -29,6 +29,12 @@ if errorlevel 1 (
 )
 
 echo Starting ngrok tunnel for http://localhost:%PORT% ...
-ngrok http %PORT%
+start "ngrok Tunnel" cmd /k "ngrok http %PORT%"
+
+echo.
+echo Crossline server and ngrok tunnel have been launched in separate windows.
+echo This window will remain open so you can monitor their output.
+echo Press any key to close this launcher once you are done.
+pause >nul
 
 endlocal
