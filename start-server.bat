@@ -20,15 +20,8 @@ if %PORT_NUM% LSS 1 set "PORT=80" & set "PORT_NUM=80"
 if %PORT_NUM% LSS 1024 if %PORT_NUM% GTR 0 (
   net session >nul 2>&1
   if errorlevel 1 (
-    echo [ERROR] Port %REQUESTED_PORT% requires administrator rights.
-    echo         Перезапустите батник от имени администратора или выберите другой порт.
-    choice /c YN /m "Fallback to port 3000 for this session? [Y/N]"
-    if errorlevel 2 (
-      echo [INFO] Отмена запуска. Ни сервер, ни туннель не были запущены.
-      pause
-      exit /b 1
-    )
-    echo [INFO] Используем порт 3000 для текущего запуска.
+    echo [WARN] Port %REQUESTED_PORT% requires administrator rights. Falling back to 3000.
+    echo        Если нужен порт 80 — запустите батник от имени администратора.
     set "PORT=3000"
     set "PORT_NUM=3000"
   )
