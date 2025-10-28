@@ -7,12 +7,6 @@ rem ========= CONFIG =========
 set "PORT=80"
 set "NGROK_EXE=C:\Users\illya\AppData\Local\Microsoft\WinGet\Links\ngrok.exe"
 
-rem ========= LOGS =========
-if not exist "logs" mkdir "logs"
-for /f %%t in ('powershell -NoProfile -Command "(Get-Date).ToString('yyyyMMdd_HHmmss')"') do set "TS=%%t"
-set "SERVER_LOG=logs\server_%TS%.log"
-set "NGROK_LOG=logs\ngrok_%TS%.log"
-
 rem ========= PORT CHECK =========
 if %PORT% LSS 1024 (
   net session >nul 2>&1
