@@ -1,0 +1,40 @@
+@echo off
+setlocal
+cd /d %~dp0
+
+if "%PORT%"=="" (
+  set "PORT=3000"
+)
+
+if "%NGROK_AUTHTOKEN%"=="" (
+  echo [ERROR] NGROK_AUTHTOKEN environment variable is not set.
+  echo Please run "setx NGROK_AUTHTOKEN your_token" and restart the terminal.
+  exit /b 1
+)
+
+where ngrok >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] ngrok executable not found in PATH.
+  echo Install ngrok from https://ngrok.com/download and ensure it is available in PATH.
+  exit /b 1
+)
+
+echo Launching Crossline server on port %PORT%...
+start "Crossline Server" cmd /k "set PORT=%PORT% && node server/index.js"
+
+echo Starting ngrok tunnel manager...
+set "NGROK_SCRIPT=%~dp0scripts\ngrok-launcher.bat"
+if not exist "%NGROK_SCRIPT%" (
+  echo [ERROR] Missing ngrok helper script at %NGROK_SCRIPT%.
+  exit /b 1
+)
+
+start "ngrok Tunnel" cmd /k "call \"%NGROK_SCRIPT%\" %PORT%"
+
+echo.
+echo Crossline server and ngrok tunnel have been launched in separate windows.
+echo This window will remain open so you can monitor their output.
+echo Press any key to close this launcher once you are done.
+pause >nul
+
+endlocal
