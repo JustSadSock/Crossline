@@ -4,6 +4,7 @@ chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 rem -------- Settings (edit once if you want) --------
 if not defined PORT set "PORT=3000"
 if not defined NGROK_EXE set "NGROK_EXE=ngrok"
@@ -65,6 +66,15 @@ rem ========= LOGS =========
 if not exist "logs" mkdir "logs"
 for /f %%t in ('powershell -NoProfile -Command "(Get-Date).ToString('yyyyMMdd_HHmmss')"') do set "TS=%%t"
 >>>>>>> Stashed changes
+=======
+rem ========= CONFIG =========
+set "PORT=80"
+set "NGROK_EXE=C:\Users\illya\AppData\Local\Microsoft\WinGet\Links\ngrok.exe"
+
+rem ========= LOGS =========
+if not exist "logs" mkdir "logs"
+for /f %%t in ('powershell -NoProfile -Command "(Get-Date).ToString('yyyyMMdd_HHmmss')"') do set "TS=%%t"
+>>>>>>> Stashed changes
 set "SERVER_LOG=logs\server_%TS%.log"
 set "NGROK_LOG=logs\ngrok_%TS%.log"
 
@@ -111,6 +121,7 @@ echo [INFO] Logs:
 echo   %SERVER_LOG%
 echo   %NGROK_LOG%
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 echo Starting server on http://localhost:%PORT%
 
 rem -------- Launch server in its own window (kept open) --------
@@ -121,6 +132,8 @@ echo Starting ngrok tunnel to localhost:%PORT%
 start "ngrok Tunnel" cmd /k ""%NGROK_CMD%" http %PORT% --log=stdout ^>^> ^"%NGROK_LOG%^" 2^>^&1"
 
 echo Ready. Child consoles stay open. You can close this parent window anytime.
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 pause
