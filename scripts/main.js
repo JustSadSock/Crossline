@@ -16,19 +16,42 @@ const modeLabel = document.getElementById('mode-label');
 const statusText = document.getElementById('status-text');
 const healthFill = document.getElementById('health-fill');
 const healthValue = document.getElementById('health-value');
+const shieldFill = document.getElementById('shield-fill');
+const shieldValue = document.getElementById('shield-value');
+const dashReady = document.getElementById('dash-ready');
+const dashCharges = document.getElementById('dash-charges');
 const scoreboard = document.getElementById('scoreboard');
 const leaveGameBtn = document.getElementById('leave-game');
 const respawnOverlay = document.getElementById('respawn-overlay');
 const respawnBtn = document.getElementById('respawn-btn');
 const mobileControls = document.getElementById('mobile-controls');
 const mobileFire = document.getElementById('mobile-fire');
+const mobileShield = document.getElementById('mobile-shield');
+const mobileDash = document.getElementById('mobile-dash');
+const moveJoystick = document.getElementById('move-joystick');
+const aimJoystick = document.getElementById('aim-joystick');
+const openControlsBtn = document.getElementById('open-controls');
+const controlsDialog = document.getElementById('controls-dialog');
+const closeControlsBtn = document.getElementById('close-controls');
 const roomTemplate = document.getElementById('room-template');
 const notificationsRoot = document.getElementById('notifications');
+
+const SHIELD_KEY_CODES = new Set(['ShiftLeft', 'ShiftRight']);
+const SHIELD_KEY_FALLBACKS = new Set(['q', 'e']);
 
 const inputState = {
   keys: new Set(),
   pointer: { x: canvas.width / 2, y: canvas.height / 2 },
   fire: false,
+  shield: false,
+  dashRequested: false,
+  moveVector: { x: 0, y: 0 },
+  aimVector: { x: 0, y: 0, active: false },
+  consumeDashRequest() {
+    const pending = this.dashRequested;
+    this.dashRequested = false;
+    return pending;
+  },
 };
 
 const state = {
@@ -37,6 +60,48 @@ const state = {
   currentGame: null,
   currentMode: null,
 };
+
+const dashChargeElements = dashCharges ? Array.from(dashCharges.querySelectorAll('.hud__charge')) : [];
+
+const MOVEMENT_KEY_MAP = {
+  KeyW: 'w',
+  ArrowUp: 'w',
+  KeyS: 's',
+  ArrowDown: 's',
+  KeyA: 'a',
+  ArrowLeft: 'a',
+  KeyD: 'd',
+  ArrowRight: 'd',
+};
+
+function updateShieldUi(ratio, active) {
+  if (!shieldFill || !shieldValue) return;
+  const clamped = Math.max(0, Math.min(1, ratio));
+  shieldFill.style.width = `${(clamped * 100).toFixed(1)}%`;
+  if (active) {
+    shieldFill.dataset.state = 'active';
+  } else if (clamped < 1) {
+    shieldFill.dataset.state = 'recharging';
+  } else {
+    delete shieldFill.dataset.state;
+  }
+  shieldValue.textContent = `${Math.round(clamped * 100)}%`;
+}
+
+function updateDashUi(value) {
+  if (!dashReady || !dashChargeElements.length) return;
+  const clamped = Math.max(0, Math.min(dashChargeElements.length, value));
+  dashReady.textContent = Math.floor(clamped).toString();
+  dashChargeElements.forEach((node, index) => {
+    const fill = Math.max(0, Math.min(1, clamped - index));
+    node.style.setProperty('--fill', fill.toFixed(2));
+    if (fill >= 0.99) {
+      node.classList.add('hud__charge--ready');
+    } else {
+      node.classList.remove('hud__charge--ready');
+    }
+  });
+}
 
 const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '::1'];
 
@@ -117,6 +182,8 @@ const ui = {
     statusText.textContent = 'загрузка…';
     statusText.dataset.state = 'neutral';
     updateHealthBar(100);
+    updateShieldUi(1, false);
+    updateDashUi(dashChargeElements.length || 3);
     updateScoreboard([]);
     respawnOverlay.classList.add('hidden');
     respawnBtn.disabled = false;
@@ -135,6 +202,12 @@ const ui = {
   },
   setHealth(value) {
     updateHealthBar(value);
+  },
+  setShield(ratio, active) {
+    updateShieldUi(ratio, active);
+  },
+  setDash(value) {
+    updateDashUi(value);
   },
   setScoreboard(entries) {
     updateScoreboard(entries);
@@ -296,6 +369,9 @@ function toggleView(inGame) {
 function centerPointer() {
   inputState.pointer.x = canvas.width / 2;
   inputState.pointer.y = canvas.height / 2;
+  inputState.aimVector.x = 0;
+  inputState.aimVector.y = 0;
+  inputState.aimVector.active = false;
 }
 
 async function loadRooms() {
@@ -413,20 +489,108 @@ async function handleCreateRoom(event) {
 function resetInputState() {
   inputState.keys.clear();
   inputState.fire = false;
+  inputState.shield = false;
+  inputState.dashRequested = false;
+  inputState.moveVector.x = 0;
+  inputState.moveVector.y = 0;
+  inputState.aimVector.x = 0;
+  inputState.aimVector.y = 0;
+  inputState.aimVector.active = false;
   centerPointer();
+}
+
+function isTextInput(target) {
+  return target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+}
+
+function updateMovementKeys(event, pressed) {
+  const target = event.target;
+  if (isTextInput(target) && target !== document.body) {
+    return false;
+  }
+  if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
+    return false;
+  }
+  const mapped = MOVEMENT_KEY_MAP[event.code] || null;
+  let handled = false;
+  if (mapped) {
+    handled = true;
+    if (pressed) {
+      inputState.keys.add(mapped);
+    } else {
+      inputState.keys.delete(mapped);
+    }
+  } else {
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    if (['w', 'a', 's', 'd'].includes(key)) {
+      handled = true;
+      if (pressed) {
+        inputState.keys.add(key);
+      } else {
+        inputState.keys.delete(key);
+      }
+    }
+  }
+  if (handled && event.cancelable) {
+    event.preventDefault();
+  }
+  return handled;
+}
+
+function releaseActiveInputs() {
+  inputState.keys.clear();
+  inputState.fire = false;
+  inputState.shield = false;
+  inputState.dashRequested = false;
+  inputState.moveVector.x = 0;
+  inputState.moveVector.y = 0;
+  inputState.aimVector.x = 0;
+  inputState.aimVector.y = 0;
+  inputState.aimVector.active = false;
 }
 
 function attachInputListeners() {
   document.addEventListener('keydown', (event) => {
-    const key = event.key.toLowerCase();
-    if (['w', 'a', 's', 'd'].includes(key)) {
-      inputState.keys.add(key);
+    if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
+      if (event.key === 'Escape') {
+        hideControlsModal();
+      }
+      return;
+    }
+    updateMovementKeys(event, true);
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    if (event.code === 'Space' && !isTextInput(event.target)) {
+      event.preventDefault();
+      if (!event.repeat) {
+        inputState.dashRequested = true;
+      }
+    } else if (
+      !isTextInput(event.target) &&
+      (SHIELD_KEY_CODES.has(event.code) || SHIELD_KEY_FALLBACKS.has(key))
+    ) {
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+      inputState.shield = true;
     }
   });
   document.addEventListener('keyup', (event) => {
-    const key = event.key.toLowerCase();
-    if (['w', 'a', 's', 'd'].includes(key)) {
-      inputState.keys.delete(key);
+    if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
+      return;
+    }
+    updateMovementKeys(event, false);
+    if (event.code === 'Space' && !isTextInput(event.target)) {
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+    } else if (
+      !isTextInput(event.target) &&
+      (SHIELD_KEY_CODES.has(event.code) || SHIELD_KEY_FALLBACKS.has((event.key || '').toLowerCase()))
+    ) {
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+      inputState.shield = false;
     }
   });
   canvas.addEventListener('mousemove', (event) => {
@@ -434,11 +598,23 @@ function attachInputListeners() {
     inputState.pointer.x = event.clientX - rect.left;
     inputState.pointer.y = event.clientY - rect.top;
   });
-  canvas.addEventListener('mousedown', () => {
-    inputState.fire = true;
+  canvas.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
   });
-  document.addEventListener('mouseup', () => {
-    inputState.fire = false;
+  canvas.addEventListener('mousedown', (event) => {
+    if (event.button === 2) {
+      inputState.shield = true;
+    } else if (event.button === 0) {
+      inputState.fire = true;
+    }
+  });
+  document.addEventListener('mouseup', (event) => {
+    if (event.button === 2) {
+      inputState.shield = false;
+    }
+    if (event.button === 0) {
+      inputState.fire = false;
+    }
   });
   canvas.addEventListener('touchstart', (event) => {
     if (event.cancelable) {
@@ -469,39 +645,184 @@ function attachInputListeners() {
 
 function attachMobileControls() {
   if (!mobileControls) return;
-  mobileControls.querySelectorAll('.mobile-key').forEach((btn) => {
-    const key = btn.dataset.key;
-    const activate = () => inputState.keys.add(key);
-    const deactivate = () => inputState.keys.delete(key);
-    btn.addEventListener('touchstart', (event) => {
+  const isTouch = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+  mobileControls.classList.toggle('mobile-controls--active', isTouch);
+  if (!isTouch) {
+    return;
+  }
+
+  const bindButton = (element, onDown, onUp) => {
+    if (!element) return;
+    element.addEventListener('touchstart', (event) => {
       if (event.cancelable) event.preventDefault();
-      activate();
+      onDown();
     }, { passive: false });
-    btn.addEventListener('touchend', (event) => {
+    element.addEventListener('touchend', (event) => {
       if (event.cancelable) event.preventDefault();
-      deactivate();
+      if (onUp) onUp();
     }, { passive: false });
-    btn.addEventListener('touchcancel', deactivate);
+    element.addEventListener('touchcancel', () => {
+      if (onUp) onUp();
+    });
+  };
+
+  const setupJoystick = (root, onChange) => {
+    if (!root) return;
+    const stick = root.querySelector('.joystick__stick');
+    if (!stick) return;
+    let active = false;
+    let identifier = null;
+
+    const reset = () => {
+      active = false;
+      identifier = null;
+      stick.style.transform = 'translate(-50%, -50%)';
+      onChange({ x: 0, y: 0, active: false });
+    };
+
+    const updateFromTouch = (touch) => {
+      const rect = root.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const dx = touch.clientX - centerX;
+      const dy = touch.clientY - centerY;
+      const maxRadius = rect.width / 2;
+      const distance = Math.min(Math.hypot(dx, dy), maxRadius);
+      const angle = Math.atan2(dy, dx);
+      const normalized = maxRadius > 0 ? distance / maxRadius : 0;
+      const normX = Math.cos(angle) * normalized;
+      const normY = Math.sin(angle) * normalized;
+      const travel = maxRadius - stick.clientWidth / 2;
+      const offsetX = normX * travel;
+      const offsetY = normY * travel;
+      stick.style.transform = `translate(calc(-50% + ${offsetX}px), calc(-50% + ${offsetY}px))`;
+      onChange({ x: normX, y: normY, active: normalized > 0.1 });
+    };
+
+    root.addEventListener('touchstart', (event) => {
+      if (active) return;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      if (event.cancelable) event.preventDefault();
+      active = true;
+      identifier = touch.identifier;
+      updateFromTouch(touch);
+    }, { passive: false });
+
+    root.addEventListener('touchmove', (event) => {
+      if (!active) return;
+      const touch = Array.from(event.changedTouches).find((t) => t.identifier === identifier);
+      if (!touch) return;
+      if (event.cancelable) event.preventDefault();
+      updateFromTouch(touch);
+    }, { passive: false });
+
+    const handleEnd = (event) => {
+      if (!active) return;
+      const touch = Array.from(event.changedTouches).find((t) => t.identifier === identifier);
+      if (!touch) return;
+      if (event.cancelable) event.preventDefault();
+      reset();
+    };
+
+    root.addEventListener('touchend', handleEnd, { passive: false });
+    root.addEventListener('touchcancel', reset);
+  };
+
+  setupJoystick(moveJoystick, ({ x, y, active }) => {
+    inputState.moveVector.x = active ? x : 0;
+    inputState.moveVector.y = active ? y : 0;
   });
-  mobileFire.addEventListener('touchstart', (event) => {
-    if (event.cancelable) event.preventDefault();
+
+  setupJoystick(aimJoystick, ({ x, y, active }) => {
+    inputState.aimVector.x = x;
+    inputState.aimVector.y = y;
+    inputState.aimVector.active = active;
+  });
+
+  bindButton(mobileFire, () => {
     inputState.fire = true;
-  }, { passive: false });
-  mobileFire.addEventListener('touchend', (event) => {
-    if (event.cancelable) event.preventDefault();
-    inputState.fire = false;
-  }, { passive: false });
-  mobileFire.addEventListener('touchcancel', () => {
+  }, () => {
     inputState.fire = false;
   });
+
+  bindButton(mobileShield, () => {
+    inputState.shield = true;
+  }, () => {
+    inputState.shield = false;
+  });
+
+  bindButton(mobileDash, () => {
+    inputState.dashRequested = true;
+  });
+
+  window.addEventListener('blur', () => {
+    releaseActiveInputs();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      releaseActiveInputs();
+    }
+  });
+}
+
+let lastFocusedBeforeModal = null;
+
+function isControlsModalOpen() {
+  return Boolean(controlsDialog && !controlsDialog.classList.contains('hidden'));
+}
+
+function showControlsModal() {
+  if (!controlsDialog) return;
+  if (isControlsModalOpen()) return;
+  releaseActiveInputs();
+  lastFocusedBeforeModal = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  controlsDialog.classList.remove('hidden');
+  controlsDialog.setAttribute('aria-hidden', 'false');
+  if (openControlsBtn) {
+    openControlsBtn.setAttribute('aria-expanded', 'true');
+  }
+  const focusTarget = closeControlsBtn || controlsDialog.querySelector('button, [href], [tabindex="0"]');
+  if (focusTarget instanceof HTMLElement) {
+    focusTarget.focus();
+  }
+}
+
+function hideControlsModal() {
+  if (!controlsDialog) return;
+  if (!isControlsModalOpen()) return;
+  controlsDialog.classList.add('hidden');
+  controlsDialog.setAttribute('aria-hidden', 'true');
+  if (openControlsBtn) {
+    openControlsBtn.setAttribute('aria-expanded', 'false');
+  }
+  if (lastFocusedBeforeModal && document.contains(lastFocusedBeforeModal)) {
+    lastFocusedBeforeModal.focus();
+  } else if (openControlsBtn) {
+    openControlsBtn.focus();
+  }
+}
+
+if (controlsDialog) {
+  controlsDialog.setAttribute('aria-hidden', controlsDialog.classList.contains('hidden') ? 'true' : 'false');
 }
 
 function resizeCanvas() {
   const ratio = 16 / 9;
-  const wrapperWidth = canvas.parentElement ? canvas.parentElement.clientWidth : canvas.clientWidth;
-  const width = Math.max(wrapperWidth, 320);
+  const wrapper = canvas.parentElement;
+  const wrapperWidth = wrapper ? wrapper.clientWidth : canvas.clientWidth;
+  const wrapperHeight = wrapper ? wrapper.clientHeight : canvas.clientHeight;
+  let width = Math.max(wrapperWidth, 320);
+  let height = width / ratio;
+  if (wrapperHeight && height > wrapperHeight) {
+    height = wrapperHeight;
+    width = height * ratio;
+  }
+  width = Math.max(320, width);
+  height = Math.max(180, height);
   canvas.width = width;
-  canvas.height = width / ratio;
+  canvas.height = height;
 }
 
 window.addEventListener('resize', () => {
@@ -582,6 +903,27 @@ function init() {
       state.currentGame.respawn();
     }
   });
+  if (openControlsBtn) {
+    openControlsBtn.setAttribute('aria-expanded', 'false');
+    openControlsBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      showControlsModal();
+    });
+  }
+  if (closeControlsBtn) {
+    closeControlsBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      hideControlsModal();
+    });
+  }
+  if (controlsDialog) {
+    controlsDialog.addEventListener('click', (event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.dataset.close === 'controls') {
+        hideControlsModal();
+      }
+    });
+  }
   loadRooms();
 }
 
