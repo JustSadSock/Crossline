@@ -1,6 +1,8 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const cluster = require('cluster');
+const os = require('os');
 const { promisify } = require('util');
 const WebSocket = require('ws');
 const {
@@ -14,152 +16,212 @@ const {
 const readFile = promisify(fs.readFile);
 const access = promisify(fs.access);
 
-const DEFAULT_PORT = 3000;
-const requestedPort = parsePort(process.env.PORT, DEFAULT_PORT);
-const candidatePorts = buildPortList(requestedPort, DEFAULT_PORT);
-let booting = true;
-let lastPortAttempted = null;
 const ROOT_DIR = path.resolve(__dirname, '..');
 const STATIC_DIRS = new Set(['styles', 'scripts', 'assets']);
 
-ensureDefaultRooms();
-setInterval(() => pruneRooms(), 60 * 1000);
+bootstrap();
 
-const server = http.createServer(async (req, res) => {
-  if (applyCors(req, res)) {
+function bootstrap() {
+  const clusterEnabled = shouldUseCluster();
+  if (clusterEnabled && cluster.isPrimary) {
+    const workerCount = resolveWorkerCount();
+    console.log(`[CLUSTER] Primary ${process.pid} launching ${workerCount} workers`);
+    for (let index = 0; index < workerCount; index += 1) {
+      cluster.fork();
+    }
+
+    cluster.on('online', (worker) => {
+      console.log(`[CLUSTER] Worker ${worker.process.pid} is online`);
+    });
+
+    cluster.on('exit', (worker, code, signal) => {
+      const reason = signal ? `signal ${signal}` : `code ${code}`;
+      console.warn(`[CLUSTER] Worker ${worker.process.pid} exited (${reason})`);
+      if (code !== 0 && !signal) {
+        console.warn('[CLUSTER] Restarting worker...');
+        cluster.fork();
+      }
+    });
     return;
   }
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  if (req.method === 'GET' && url.pathname === '/rooms') {
-    const rooms = listRooms();
-    res.setHeader('Content-Type', 'application/json');
-    res.writeHead(200);
-    res.end(JSON.stringify(rooms));
-    return;
+
+  if (!clusterEnabled && cluster.isPrimary) {
+    console.log('[CLUSTER] Running in single-process mode');
   }
 
-  if (req.method === 'POST' && url.pathname === '/rooms') {
-    try {
-      const body = await readRequestBody(req);
-      const payload = JSON.parse(body || '{}');
-      const name = typeof payload.name === 'string' ? payload.name : '';
-      const room = createRoom({ name: sanitizeName(name).slice(0, 24) });
-      const info = room.getLobbyInfo();
+  startServer();
+}
+
+function startServer() {
+  const DEFAULT_PORT = 3000;
+  const requestedPort = parsePort(process.env.PORT, DEFAULT_PORT);
+  const candidatePorts = buildPortList(requestedPort, DEFAULT_PORT);
+  let booting = true;
+  let lastPortAttempted = null;
+
+  if (cluster.isWorker) {
+    console.log(`[CLUSTER] Worker ${process.pid} starting game server`);
+  }
+
+  ensureDefaultRooms();
+  setInterval(() => pruneRooms(), 60 * 1000);
+
+  const server = http.createServer(async (req, res) => {
+    if (applyCors(req, res)) {
+      return;
+    }
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    if (req.method === 'GET' && url.pathname === '/rooms') {
+      const rooms = listRooms();
       res.setHeader('Content-Type', 'application/json');
-      res.writeHead(201);
-      res.end(JSON.stringify(info));
-    } catch (error) {
-      console.error('Failed to create room', error);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.writeHead(400);
-      res.end('Не удалось создать комнату');
+      res.writeHead(200);
+      res.end(JSON.stringify(rooms));
+      return;
     }
-    return;
-  }
 
-  if (req.method === 'GET' && url.pathname === '/health') {
-    res.setHeader('Content-Type', 'application/json');
-    res.writeHead(200);
-    res.end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
+    if (req.method === 'POST' && url.pathname === '/rooms') {
+      try {
+        const body = await readRequestBody(req);
+        const payload = JSON.parse(body || '{}');
+        const name = typeof payload.name === 'string' ? payload.name : '';
+        const room = createRoom({ name: sanitizeName(name).slice(0, 24) });
+        const info = room.getLobbyInfo();
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(201);
+        res.end(JSON.stringify(info));
+      } catch (error) {
+        console.error('Failed to create room', error);
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.writeHead(400);
+        res.end('Не удалось создать комнату');
+      }
+      return;
+    }
 
-  serveStatic(url.pathname, res);
-});
+    if (req.method === 'GET' && url.pathname === '/health') {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(200);
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
 
-server.keepAliveTimeout = 65000;
-server.headersTimeout = 66000;
-
-const wss = new WebSocket.Server({ server });
-
-wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const roomId = url.searchParams.get('room');
-  const playerName = sanitizeName(url.searchParams.get('name') || '');
-
-  if (!roomId) {
-    sendAndClose(ws, { type: 'error', message: 'Комната не указана' }, 1008);
-    return;
-  }
-
-  const room = getRoom(roomId);
-  if (!room) {
-    sendAndClose(ws, { type: 'error', message: 'Комната не найдена' }, 1008);
-    return;
-  }
-
-  if (room.isFull()) {
-    sendAndClose(ws, { type: 'error', message: 'Комната заполнена' }, 1008);
-    return;
-  }
-
-  let playerId;
-  try {
-    playerId = room.attachClient(ws, playerName);
-  } catch (error) {
-    console.error('Attach client error', error);
-    sendAndClose(ws, { type: 'error', message: 'Не удалось присоединиться' }, 1011);
-    return;
-  }
-
-  ws.on('message', (data) => {
-    room.handleMessage(playerId, data);
+    serveStatic(url.pathname, res);
   });
 
-  ws.on('close', () => {
-    room.detachClient(playerId);
-  });
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
 
-  ws.on('error', (error) => {
-    console.error('WebSocket error', error);
-    room.detachClient(playerId);
-  });
-});
+  const wss = new WebSocket.Server({ server });
 
-server.on('clientError', (error, socket) => {
-  logIssue('HTTP client error', error);
-  if (socket && !socket.destroyed) {
+  wss.on('connection', (ws, req) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const roomId = url.searchParams.get('room');
+    const playerName = sanitizeName(url.searchParams.get('name') || '');
+
+    if (!roomId) {
+      sendAndClose(ws, { type: 'error', message: 'Комната не указана' }, 1008);
+      return;
+    }
+
+    const room = getRoom(roomId);
+    if (!room) {
+      sendAndClose(ws, { type: 'error', message: 'Комната не найдена' }, 1008);
+      return;
+    }
+
+    if (room.isFull()) {
+      sendAndClose(ws, { type: 'error', message: 'Комната заполнена' }, 1008);
+      return;
+    }
+
+    let playerId;
     try {
-      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
-    } catch (socketError) {
-      logIssue('Failed to close client socket gracefully', socketError);
+      playerId = room.attachClient(ws, playerName);
+    } catch (error) {
+      console.error('Attach client error', error);
+      sendAndClose(ws, { type: 'error', message: 'Не удалось присоединиться' }, 1011);
+      return;
     }
-  }
-});
 
-server.on('error', (error) => {
-  if (booting && isBindError(error) && candidatePorts.length) {
-    const previousPort = lastPortAttempted;
-    const nextPeek = candidatePorts[0];
-    const nextLabel = typeof nextPeek === 'undefined' ? 'n/a' : nextPeek === 0 ? 'auto (random open port)' : nextPeek;
-    console.warn(
-      `[BOOT] Port ${previousPort === 0 ? 'auto' : previousPort} unavailable (${error.code}). Retrying on ${nextLabel}...`,
-    );
-    setTimeout(() => attemptListen(), 750);
-    return;
-  }
-  logIssue('HTTP server error', error);
-});
+    ws.on('message', (data) => {
+      room.handleMessage(playerId, data);
+    });
 
-wss.on('error', (error) => {
-  if (booting && isBindError(error)) {
-    return;
-  }
-  logIssue('WebSocket server error', error);
-});
+    ws.on('close', () => {
+      room.detachClient(playerId);
+    });
 
-attemptListen();
+    ws.on('error', (error) => {
+      console.error('WebSocket error', error);
+      room.detachClient(playerId);
+    });
+  });
 
-server.on('listening', () => {
-  const address = server.address();
-  const port = typeof address === 'string' ? requestedPort : address.port;
-  process.env.PORT = String(port);
-  booting = false;
-  if (port !== requestedPort) {
-    console.log(`[BOOT] Requested port ${requestedPort} unavailable. Using fallback port ${port}.`);
-  }
-  console.log(`Server running on http://localhost:${port}`);
-});
+  server.on('clientError', (error, socket) => {
+    logIssue('HTTP client error', error);
+    if (socket && !socket.destroyed) {
+      try {
+        socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      } catch (socketError) {
+        logIssue('Failed to close client socket gracefully', socketError);
+      }
+    }
+  });
+
+  server.on('error', (error) => {
+    if (booting && isBindError(error) && candidatePorts.length) {
+      const previousPort = lastPortAttempted;
+      const nextPeek = candidatePorts[0];
+      const nextLabel = typeof nextPeek === 'undefined' ? 'n/a' : nextPeek === 0 ? 'auto (random open port)' : nextPeek;
+      console.warn(
+        `[BOOT] Port ${previousPort === 0 ? 'auto' : previousPort} unavailable (${error.code}). Retrying on ${nextLabel}...`,
+      );
+      setTimeout(() => attemptListen(), 750);
+      return;
+    }
+    logIssue('HTTP server error', error);
+  });
+
+  wss.on('error', (error) => {
+    if (booting && isBindError(error)) {
+      return;
+    }
+    logIssue('WebSocket server error', error);
+  });
+
+  const attemptListen = () => {
+    const nextPort = candidatePorts.shift();
+    if (typeof nextPort === 'undefined') {
+      console.error('[BOOT] No available ports to bind. Exiting.');
+      process.exit(1);
+    }
+    const label = nextPort === 0 ? 'auto (random open port)' : nextPort;
+    console.log(`[BOOT] Attempting to listen on port ${label}...`);
+    lastPortAttempted = nextPort;
+    server.listen(nextPort);
+  };
+
+  attemptListen();
+
+  server.on('listening', () => {
+    const address = server.address();
+    const port = typeof address === 'string' ? requestedPort : address.port;
+    process.env.PORT = String(port);
+    booting = false;
+    if (port !== requestedPort) {
+      console.log(`[BOOT] Requested port ${requestedPort} unavailable. Using fallback port ${port}.`);
+    }
+    console.log(`Server running on http://localhost:${port}`);
+  });
+
+  process.on('uncaughtException', (error) => {
+    logIssue('Uncaught exception', error);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    logIssue('Unhandled rejection', reason);
+  });
+}
 
 function logIssue(context, error) {
   const stamp = new Date().toISOString();
@@ -168,26 +230,6 @@ function logIssue(context, error) {
   } else {
     console.error(`[${stamp}] ${context}:`, error);
   }
-}
-
-process.on('uncaughtException', (error) => {
-  logIssue('Uncaught exception', error);
-});
-
-process.on('unhandledRejection', (reason) => {
-  logIssue('Unhandled rejection', reason);
-});
-
-function attemptListen() {
-  const nextPort = candidatePorts.shift();
-  if (typeof nextPort === 'undefined') {
-    console.error('[BOOT] No available ports to bind. Exiting.');
-    process.exit(1);
-  }
-  const label = nextPort === 0 ? 'auto (random open port)' : nextPort;
-  console.log(`[BOOT] Attempting to listen on port ${label}...`);
-  lastPortAttempted = nextPort;
-  server.listen(nextPort);
 }
 
 async function serveStatic(requestPath, res) {
@@ -372,4 +414,38 @@ function appendVaryHeader(res, value) {
     values.push(value);
     res.setHeader('Vary', values.join(', '));
   }
+}
+
+function shouldUseCluster() {
+  if (process.env.CROSSLINE_CLUSTER === '0' || process.env.CROSSLINE_CLUSTER === 'false') {
+    return false;
+  }
+  const workers = resolveWorkerCount();
+  return workers > 1;
+}
+
+function resolveWorkerCount() {
+  const overrides = [process.env.CROSSLINE_CLUSTER_WORKERS, process.env.WEB_CONCURRENCY];
+  for (const value of overrides) {
+    const parsed = parseWorkerCount(value);
+    if (parsed > 0) {
+      return parsed;
+    }
+  }
+  const cpuInfo = os.cpus();
+  if (Array.isArray(cpuInfo) && cpuInfo.length > 0) {
+    return cpuInfo.length;
+  }
+  return 1;
+}
+
+function parseWorkerCount(value) {
+  if (typeof value === 'undefined' || value === null || value === '') {
+    return 0;
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return 0;
 }
