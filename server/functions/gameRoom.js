@@ -20,11 +20,59 @@ const {
   WEAPON_HEAT_SAFE_RATIO,
   WEAPON_MIN_SHOT_INTERVAL,
 } = require('./constants');
+const { createObjectPool } = require('./objectPool');
 
 const TICK_RATE = 30;
 const MOVE_THROTTLE_MS = 16;
 const STEP_DELTA = 1000 / TICK_RATE;
+const LOW_PRIORITY_BROADCAST_INTERVAL_MS = 50;
+const HIGH_PRIORITY_BROADCAST_DELAY_MS = 0;
 const MIN_SHOT_INTERVAL = WEAPON_MIN_SHOT_INTERVAL;
+const BULLET_LIFETIME_MS_ESTIMATE =
+  (Math.sqrt(GAME_WIDTH * GAME_WIDTH + GAME_HEIGHT * GAME_HEIGHT) / BULLET_SPEED) *
+  (1000 / TICK_RATE);
+const BULLETS_PER_PLAYER_ESTIMATE = Math.max(
+  8,
+  Math.ceil((BULLET_LIFETIME_MS_ESTIMATE / MIN_SHOT_INTERVAL) * 1.2),
+);
+
+const PLAYER_FIELD_FLAGS = {
+  POSITION: 1 << 0,
+  ANGLE: 1 << 1,
+  HEALTH: 1 << 2,
+  SCORE: 1 << 3,
+  SHIELD: 1 << 4,
+  DASH: 1 << 5,
+  STATUS: 1 << 6,
+  NAME: 1 << 7,
+};
+
+const PLAYER_FIELD_ALL =
+  PLAYER_FIELD_FLAGS.POSITION |
+  PLAYER_FIELD_FLAGS.ANGLE |
+  PLAYER_FIELD_FLAGS.HEALTH |
+  PLAYER_FIELD_FLAGS.SCORE |
+  PLAYER_FIELD_FLAGS.SHIELD |
+  PLAYER_FIELD_FLAGS.DASH |
+  PLAYER_FIELD_FLAGS.STATUS |
+  PLAYER_FIELD_FLAGS.NAME;
+
+const HIGH_PRIORITY_PLAYER_MASK =
+  PLAYER_FIELD_FLAGS.HEALTH |
+  PLAYER_FIELD_FLAGS.SCORE |
+  PLAYER_FIELD_FLAGS.STATUS |
+  PLAYER_FIELD_FLAGS.NAME;
+
+const BULLET_FIELD_FLAGS = {
+  POSITION: 1 << 0,
+  ANGLE: 1 << 1,
+  OWNER: 1 << 2,
+};
+
+const BULLET_FIELD_ALL =
+  BULLET_FIELD_FLAGS.POSITION | BULLET_FIELD_FLAGS.ANGLE | BULLET_FIELD_FLAGS.OWNER;
+
+const HIGH_PRIORITY_BULLET_MASK = BULLET_FIELD_FLAGS.OWNER;
 
 function decayWeaponHeat(player) {
   if (!player) return;
@@ -50,18 +98,35 @@ class GameRoom {
     this.freePlayerSlots = [];
     this.dirtyPlayerQueue = [];
     this.removedPlayerQueue = [];
+    this.playerPool = createObjectPool(createPlayerTemplate, resetPlayerTemplate, {
+      initialSize: this.maxPlayers,
+    });
     this.clients = new Map();
     this.bullets = [];
     this.freeBulletSlots = [];
     this.dirtyBulletQueue = [];
     this.removedBulletQueue = [];
+    const bulletPrefill = Math.max(
+      BULLETS_PER_PLAYER_ESTIMATE,
+      this.maxPlayers * BULLETS_PER_PLAYER_ESTIMATE,
+    );
+    this.bulletPool = createObjectPool(createBulletTemplate, resetBulletTemplate, {
+      initialSize: bulletPrefill,
+    });
     this.nextBulletId = 0;
     this.lastActivity = Date.now();
     this.interval = setInterval(() => this.step(), 1000 / TICK_RATE);
+    this.broadcastTimer = null;
+    this.broadcastScheduled = false;
+    this.lastBroadcastAt = 0;
   }
 
   destroy() {
     clearInterval(this.interval);
+    if (this.broadcastTimer) {
+      clearTimeout(this.broadcastTimer);
+      this.broadcastTimer = null;
+    }
     this.clients.forEach((ws) => {
       try {
         if (ws && typeof ws.end === 'function') {
@@ -137,7 +202,7 @@ class GameRoom {
     player.fullSync = true;
     player.dirtyQueued = false;
     this.playerIndexById.set(playerId, player.index);
-    this.markPlayerDirty(player, true);
+    this.markPlayerDirty(player, PLAYER_FIELD_ALL, true);
     this.clients.set(playerId, ws);
     this.lastActivity = Date.now();
     this.send(ws, {
@@ -163,11 +228,16 @@ class GameRoom {
     this.clients.delete(playerId);
     const player = this.getPlayerById(playerId);
     if (player) {
-      player.active = false;
-      player.dirtyQueued = false;
+      const slot = player.index;
       this.playerIndexById.delete(playerId);
-      this.freePlayerSlots.push(player.index);
+      if (player.dirtyQueued) {
+        player.dirtyQueued = false;
+      }
+      this.freePlayerSlots.push(slot);
       this.removedPlayerQueue.push(playerId);
+      this.players[slot] = null;
+      this.playerPool.release(player);
+      this.scheduleBroadcast('high');
     }
     this.lastActivity = Date.now();
   }
@@ -199,22 +269,22 @@ class GameRoom {
         player.lastMoveDirection.x = deltaX / length;
         player.lastMoveDirection.y = deltaY / length;
       }
-      let changed = false;
+      let mask = 0;
       if (player.x !== clampedX) {
         player.x = clampedX;
-        changed = true;
+        mask |= PLAYER_FIELD_FLAGS.POSITION;
       }
       if (player.y !== clampedY) {
         player.y = clampedY;
-        changed = true;
+        mask |= PLAYER_FIELD_FLAGS.POSITION;
       }
       if (typeof angle === 'number' && Number.isFinite(angle) && player.angle !== angle) {
         player.angle = angle;
-        changed = true;
+        mask |= PLAYER_FIELD_FLAGS.ANGLE;
       }
       player.lastMoveMessageAt = now;
-      if (changed) {
-        this.markPlayerDirty(player);
+      if (mask) {
+        this.markPlayerDirty(player, mask);
       }
       this.lastActivity = now;
     } else if (message.type === 'shoot' && player.alive) {
@@ -239,7 +309,6 @@ class GameRoom {
         player.weaponOverheated = true;
         player.weaponRecoveredAt = now + WEAPON_OVERHEAT_PENALTY_MS;
       }
-      this.markPlayerDirty(player);
       this.lastActivity = now;
     } else if (message.type === 'respawn' && !player.alive) {
       this.respawnPlayer(playerId);
@@ -247,11 +316,10 @@ class GameRoom {
       const requested = !!message.active && player.alive;
       if (player.shieldRequested !== requested) {
         player.shieldRequested = requested;
-        this.markPlayerDirty(player);
       }
       if (!player.shieldRequested && player.shieldActive) {
         player.shieldActive = false;
-        this.markPlayerDirty(player);
+        this.markPlayerDirty(player, PLAYER_FIELD_FLAGS.STATUS);
       }
       this.lastActivity = now;
     } else if (message.type === 'dash' && player.alive) {
@@ -269,24 +337,24 @@ class GameRoom {
         const normY = baseY / length;
         const targetX = clamp(player.x + normX * DASH_DISTANCE, PLAYER_RADIUS, GAME_WIDTH - PLAYER_RADIUS);
         const targetY = clamp(player.y + normY * DASH_DISTANCE, PLAYER_RADIUS, GAME_HEIGHT - PLAYER_RADIUS);
-        let changed = false;
+        let mask = 0;
         if (player.x !== targetX) {
           player.x = targetX;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.POSITION;
         }
         if (player.y !== targetY) {
           player.y = targetY;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.POSITION;
         }
         const nextCharge = Math.max(0, player.dashCharge - 1);
         if (nextCharge !== player.dashCharge) {
           player.dashCharge = nextCharge;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.DASH;
         }
         player.lastMoveDirection.x = normX;
         player.lastMoveDirection.y = normY;
-        if (changed) {
-          this.markPlayerDirty(player);
+        if (mask) {
+          this.markPlayerDirty(player, mask);
         }
       }
       this.lastActivity = now;
@@ -299,11 +367,13 @@ class GameRoom {
     const slot = this.freeBulletSlots.length ? this.freeBulletSlots.pop() : this.bullets.length;
     let bullet = this.bullets[slot];
     if (!bullet) {
-      bullet = createBulletTemplate();
+      bullet = this.bulletPool.acquire();
       bullet.index = slot;
       this.bullets[slot] = bullet;
     }
-    bullet.index = slot;
+    if (bullet.index !== slot) {
+      bullet.index = slot;
+    }
     bullet.id = this.nextBulletId++;
     bullet.x = player.x;
     bullet.y = player.y;
@@ -312,7 +382,7 @@ class GameRoom {
     bullet.active = true;
     bullet.fullSync = true;
     bullet.dirtyQueued = false;
-    this.markBulletDirty(bullet, true);
+    this.markBulletDirty(bullet, BULLET_FIELD_ALL, true);
   }
 
   respawnPlayer(playerId) {
@@ -334,7 +404,7 @@ class GameRoom {
     player.weaponOverheated = false;
     player.weaponRecoveredAt = 0;
     player.lastShotAt = Date.now() - MIN_SHOT_INTERVAL;
-    this.markPlayerDirty(player, true);
+    this.markPlayerDirty(player, PLAYER_FIELD_ALL, true);
     this.lastActivity = Date.now();
   }
 
@@ -353,45 +423,44 @@ class GameRoom {
       decayWeaponHeat(player);
       recoverWeaponHeat(player, now);
       if (!player.alive) {
-        let changed = false;
+        let mask = 0;
         if (player.shieldActive) {
           player.shieldActive = false;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.STATUS;
         }
         if (player.shieldRequested) {
           player.shieldRequested = false;
-          changed = true;
         }
         const nextDash = Math.min(DASH_MAX_CHARGES, player.dashCharge + STEP_DELTA / DASH_RECHARGE_MS);
         if (nextDash !== player.dashCharge) {
           player.dashCharge = nextDash;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.DASH;
         }
-        if (changed) {
-          this.markPlayerDirty(player);
+        if (mask) {
+          this.markPlayerDirty(player, mask);
         }
         continue;
       }
-      let changed = false;
+      let mask = 0;
       if (player.shieldRequested && player.shieldCharge > 0) {
         if (!player.shieldActive) {
           player.shieldActive = true;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.STATUS;
         }
         const nextCharge = Math.max(0, player.shieldCharge - STEP_DELTA);
         if (nextCharge !== player.shieldCharge) {
           player.shieldCharge = nextCharge;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.SHIELD;
         }
         if (player.shieldCharge <= 0 && player.shieldActive) {
           player.shieldActive = false;
           player.shieldRequested = false;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.STATUS;
         }
       } else {
         if (player.shieldActive) {
           player.shieldActive = false;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.STATUS;
         }
         const nextCharge = Math.min(
           SHIELD_MAX_CHARGE,
@@ -399,7 +468,7 @@ class GameRoom {
         );
         if (nextCharge !== player.shieldCharge) {
           player.shieldCharge = nextCharge;
-          changed = true;
+          mask |= PLAYER_FIELD_FLAGS.SHIELD;
         }
       }
       const nextDash = Math.min(
@@ -408,10 +477,10 @@ class GameRoom {
       );
       if (nextDash !== player.dashCharge) {
         player.dashCharge = nextDash;
-        changed = true;
+        mask |= PLAYER_FIELD_FLAGS.DASH;
       }
-      if (changed) {
-        this.markPlayerDirty(player);
+      if (mask) {
+        this.markPlayerDirty(player, mask);
       }
     }
 
@@ -451,22 +520,26 @@ class GameRoom {
             const nextCharge = Math.max(0, player.shieldCharge - drain);
             if (nextCharge !== player.shieldCharge) {
               player.shieldCharge = nextCharge;
-              this.markPlayerDirty(player);
+              this.markPlayerDirty(player, PLAYER_FIELD_FLAGS.SHIELD);
             }
             if (player.shieldCharge <= 0) {
               if (player.shieldActive || player.shieldRequested) {
                 player.shieldActive = false;
                 player.shieldRequested = false;
-                this.markPlayerDirty(player);
+                this.markPlayerDirty(player, PLAYER_FIELD_FLAGS.STATUS);
               }
             }
-            this.markBulletDirty(bullet, true);
+            this.markBulletDirty(
+              bullet,
+              BULLET_FIELD_FLAGS.POSITION | BULLET_FIELD_FLAGS.ANGLE | BULLET_FIELD_FLAGS.OWNER,
+            );
             alive = true;
             break;
           }
         }
         if (distance < PLAYER_RADIUS + BULLET_RADIUS) {
           player.health -= DAMAGE_PER_HIT;
+          let playerMask = PLAYER_FIELD_FLAGS.HEALTH;
           if (player.health <= 0) {
             player.health = 0;
             player.alive = false;
@@ -474,21 +547,21 @@ class GameRoom {
             const shooter = this.getPlayerById(bullet.owner);
             if (shooter) {
               shooter.score = (shooter.score || 0) + 1;
-              this.markPlayerDirty(shooter);
+              this.markPlayerDirty(shooter, PLAYER_FIELD_FLAGS.SCORE);
             }
+            playerMask |= PLAYER_FIELD_FLAGS.STATUS;
           }
-          this.markPlayerDirty(player);
+          this.markPlayerDirty(player, playerMask);
           this.releaseBullet(bullet);
           alive = false;
           break;
         }
       }
       if (alive && bullet.active) {
-        this.markBulletDirty(bullet);
+        this.markBulletDirty(bullet, BULLET_FIELD_FLAGS.POSITION);
       }
     }
 
-    this.broadcastState();
   }
 
   broadcastState() {
@@ -499,22 +572,32 @@ class GameRoom {
       if (!player || !player.active) {
         continue;
       }
+      const mask = player.fullSync ? PLAYER_FIELD_ALL : player.dirtyMask || 0;
+      if (!mask) {
+        player.dirtyQueued = false;
+        player.dirtyMask = 0;
+        player.fullSync = false;
+        continue;
+      }
+      const includeName = (mask & PLAYER_FIELD_FLAGS.NAME) !== 0;
       playersToSend.push({
         id: player.id,
-        name: player.fullSync ? player.name : undefined,
-        x: player.x,
-        y: player.y,
-        angle: player.angle,
-        health: player.health,
+        name: includeName ? player.name : undefined,
+        x: mask & PLAYER_FIELD_FLAGS.POSITION ? player.x : undefined,
+        y: mask & PLAYER_FIELD_FLAGS.POSITION ? player.y : undefined,
+        angle: mask & PLAYER_FIELD_FLAGS.ANGLE ? player.angle : undefined,
+        health: mask & PLAYER_FIELD_FLAGS.HEALTH ? player.health : undefined,
         alive: player.alive,
-        score: player.score || 0,
-        shieldCharge: player.shieldCharge,
+        score: mask & PLAYER_FIELD_FLAGS.SCORE ? player.score || 0 : undefined,
+        shieldCharge: mask & PLAYER_FIELD_FLAGS.SHIELD ? player.shieldCharge : undefined,
         shieldActive: player.shieldActive,
-        dashCharge: player.dashCharge,
+        dashCharge: mask & PLAYER_FIELD_FLAGS.DASH ? player.dashCharge : undefined,
         fullSync: player.fullSync,
+        mask,
       });
       player.fullSync = false;
       player.dirtyQueued = false;
+      player.dirtyMask = 0;
     }
 
     const bulletsToSend = [];
@@ -524,16 +607,25 @@ class GameRoom {
       if (!bullet || !bullet.active) {
         continue;
       }
+      const mask = bullet.fullSync ? BULLET_FIELD_ALL : bullet.dirtyMask || 0;
+      if (!mask) {
+        bullet.dirtyQueued = false;
+        bullet.dirtyMask = 0;
+        bullet.fullSync = false;
+        continue;
+      }
       bulletsToSend.push({
         id: bullet.id,
-        x: bullet.x,
-        y: bullet.y,
-        angle: bullet.angle,
-        owner: bullet.owner,
+        x: mask & BULLET_FIELD_FLAGS.POSITION ? bullet.x : undefined,
+        y: mask & BULLET_FIELD_FLAGS.POSITION ? bullet.y : undefined,
+        angle: mask & BULLET_FIELD_FLAGS.ANGLE ? bullet.angle : undefined,
+        owner: mask & BULLET_FIELD_FLAGS.OWNER ? bullet.owner : undefined,
         fullSync: bullet.fullSync,
+        mask,
       });
       bullet.fullSync = false;
       bullet.dirtyQueued = false;
+      bullet.dirtyMask = 0;
     }
 
     const removedPlayers = [];
@@ -552,7 +644,7 @@ class GameRoom {
       !removedPlayers.length &&
       !removedBullets.length
     ) {
-      return;
+      return false;
     }
 
     const payload = encodeStateUpdate({
@@ -572,6 +664,8 @@ class GameRoom {
         // ignore send errors
       }
     });
+
+    return true;
   }
 
   randomSpawn() {
@@ -592,11 +686,53 @@ class GameRoom {
     }
   }
 
+  scheduleBroadcast(priority = 'low') {
+    if (priority === 'high') {
+      if (this.broadcastTimer) {
+        clearTimeout(this.broadcastTimer);
+      }
+      this.broadcastScheduled = true;
+      this.broadcastTimer = setTimeout(() => this.flushBroadcast(), HIGH_PRIORITY_BROADCAST_DELAY_MS);
+      return;
+    }
+
+    if (this.broadcastScheduled) {
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - this.lastBroadcastAt;
+    const delay =
+      elapsed >= LOW_PRIORITY_BROADCAST_INTERVAL_MS
+        ? 0
+        : LOW_PRIORITY_BROADCAST_INTERVAL_MS - elapsed;
+
+    this.broadcastScheduled = true;
+    this.broadcastTimer = setTimeout(() => this.flushBroadcast(), delay);
+  }
+
+  flushBroadcast() {
+    this.broadcastScheduled = false;
+    this.broadcastTimer = null;
+    const sent = this.broadcastState();
+    if (sent) {
+      this.lastBroadcastAt = Date.now();
+    }
+  }
+
+  isHighPriorityPlayerMask(mask) {
+    return (mask & HIGH_PRIORITY_PLAYER_MASK) !== 0;
+  }
+
+  isHighPriorityBulletMask(mask) {
+    return (mask & HIGH_PRIORITY_BULLET_MASK) !== 0;
+  }
+
   acquirePlayerSlot(playerId) {
     const index = this.freePlayerSlots.length ? this.freePlayerSlots.pop() : this.players.length;
     let player = this.players[index];
     if (!player) {
-      player = createPlayerTemplate();
+      player = this.playerPool.acquire();
       player.index = index;
       this.players[index] = player;
     }
@@ -618,29 +754,47 @@ class GameRoom {
     return player;
   }
 
-  markPlayerDirty(player, forceFull = false) {
+  markPlayerDirty(player, mask = PLAYER_FIELD_ALL, forceFull = false) {
     if (!player || !player.active) {
       return;
     }
     if (forceFull) {
       player.fullSync = true;
+      player.dirtyMask = PLAYER_FIELD_ALL;
+    } else if (mask) {
+      player.dirtyMask = (player.dirtyMask || 0) | mask;
     }
-    if (!player.dirtyQueued) {
+    const aggregatedMask = player.fullSync ? PLAYER_FIELD_ALL : player.dirtyMask || 0;
+    const shouldQueue = forceFull || mask;
+    if (shouldQueue && !player.dirtyQueued) {
       this.dirtyPlayerQueue.push(player.id);
       player.dirtyQueued = true;
     }
+    if (shouldQueue || aggregatedMask) {
+      const priority = forceFull || this.isHighPriorityPlayerMask(aggregatedMask) ? 'high' : 'low';
+      this.scheduleBroadcast(priority);
+    }
   }
 
-  markBulletDirty(bullet, forceFull = false) {
+  markBulletDirty(bullet, mask = BULLET_FIELD_ALL, forceFull = false) {
     if (!bullet || !bullet.active) {
       return;
     }
     if (forceFull) {
       bullet.fullSync = true;
+      bullet.dirtyMask = BULLET_FIELD_ALL;
+    } else if (mask) {
+      bullet.dirtyMask = (bullet.dirtyMask || 0) | mask;
     }
-    if (!bullet.dirtyQueued) {
+    const aggregatedMask = bullet.fullSync ? BULLET_FIELD_ALL : bullet.dirtyMask || 0;
+    const shouldQueue = forceFull || mask;
+    if (shouldQueue && !bullet.dirtyQueued) {
       this.dirtyBulletQueue.push(bullet.index);
       bullet.dirtyQueued = true;
+    }
+    if (shouldQueue || aggregatedMask) {
+      const priority = forceFull || this.isHighPriorityBulletMask(aggregatedMask) ? 'high' : 'low';
+      this.scheduleBroadcast(priority);
     }
   }
 
@@ -648,10 +802,15 @@ class GameRoom {
     if (!bullet || !bullet.active) {
       return;
     }
+    const slot = bullet.index;
+    const bulletId = bullet.id;
     bullet.active = false;
     bullet.dirtyQueued = false;
-    this.freeBulletSlots.push(bullet.index);
-    this.removedBulletQueue.push(bullet.id);
+    this.freeBulletSlots.push(slot);
+    this.removedBulletQueue.push(bulletId);
+    this.bullets[slot] = null;
+    this.bulletPool.release(bullet);
+    this.scheduleBroadcast('high');
   }
 
   buildFullStateUpdate() {
@@ -674,6 +833,7 @@ class GameRoom {
         shieldActive: player.shieldActive,
         dashCharge: player.dashCharge,
         fullSync: true,
+        mask: PLAYER_FIELD_ALL,
       });
     }
 
@@ -690,6 +850,7 @@ class GameRoom {
         angle: bullet.angle,
         owner: bullet.owner,
         fullSync: true,
+        mask: BULLET_FIELD_ALL,
       });
     }
 
@@ -737,7 +898,8 @@ function createPlayerTemplate() {
     active: false,
     dirtyQueued: false,
     fullSync: false,
-    index: 0,
+    index: -1,
+    dirtyMask: 0,
   };
 }
 
@@ -751,8 +913,54 @@ function createBulletTemplate() {
     active: false,
     dirtyQueued: false,
     fullSync: false,
-    index: 0,
+    index: -1,
+    dirtyMask: 0,
   };
+}
+
+function resetPlayerTemplate(player) {
+  player.id = '';
+  player.name = '';
+  player.x = 0;
+  player.y = 0;
+  player.angle = 0;
+  player.health = 100;
+  player.alive = true;
+  player.score = 0;
+  player.respawnTimer = null;
+  player.shieldCharge = SHIELD_MAX_CHARGE;
+  player.shieldActive = false;
+  player.shieldRequested = false;
+  player.dashCharge = DASH_MAX_CHARGES;
+  if (!player.lastMoveDirection) {
+    player.lastMoveDirection = { x: 1, y: 0 };
+  } else {
+    player.lastMoveDirection.x = 1;
+    player.lastMoveDirection.y = 0;
+  }
+  player.lastMoveMessageAt = 0;
+  player.weaponHeat = 0;
+  player.weaponOverheated = false;
+  player.weaponRecoveredAt = 0;
+  player.lastShotAt = 0;
+  player.active = false;
+  player.dirtyQueued = false;
+  player.fullSync = false;
+  player.index = -1;
+  player.dirtyMask = 0;
+}
+
+function resetBulletTemplate(bullet) {
+  bullet.id = 0;
+  bullet.x = 0;
+  bullet.y = 0;
+  bullet.angle = 0;
+  bullet.owner = '';
+  bullet.active = false;
+  bullet.dirtyQueued = false;
+  bullet.fullSync = false;
+  bullet.index = -1;
+  bullet.dirtyMask = 0;
 }
 
 function encodeStateUpdate({ players, removedPlayers, bullets, removedBullets }) {
@@ -761,11 +969,32 @@ function encodeStateUpdate({ players, removedPlayers, bullets, removedBullets })
 
   for (let i = 0; i < players.length; i += 1) {
     const player = players[i];
+    const mask = player.fullSync ? PLAYER_FIELD_ALL : player.mask || 0;
     const idLength = byteLength(player.id);
-    const nameLength = player.fullSync && player.name ? byteLength(player.name) : 0;
-    size += 2 + idLength + 28;
-    if (nameLength) {
+    const includeName = (mask & PLAYER_FIELD_FLAGS.NAME) !== 0;
+    const nameValue = includeName && player.name ? player.name : '';
+    const nameLength = includeName ? byteLength(nameValue) : 0;
+    size += 1 + 1 + idLength + 2;
+    if (includeName) {
       size += 1 + nameLength;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.POSITION) {
+      size += 8;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.ANGLE) {
+      size += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.HEALTH) {
+      size += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.SCORE) {
+      size += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.SHIELD) {
+      size += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.DASH) {
+      size += 4;
     }
   }
 
@@ -776,9 +1005,17 @@ function encodeStateUpdate({ players, removedPlayers, bullets, removedBullets })
 
   for (let i = 0; i < bullets.length; i += 1) {
     const bullet = bullets[i];
-    const ownerLength = bullet.fullSync && bullet.owner ? byteLength(bullet.owner) : 0;
-    size += 1 + 4 + 12;
-    if (ownerLength) {
+    const mask = bullet.fullSync ? BULLET_FIELD_ALL : bullet.mask || 0;
+    const ownerValue = mask & BULLET_FIELD_FLAGS.OWNER ? bullet.owner || '' : '';
+    const ownerLength = mask & BULLET_FIELD_FLAGS.OWNER ? byteLength(ownerValue) : 0;
+    size += 1 + 4 + 1;
+    if (mask & BULLET_FIELD_FLAGS.POSITION) {
+      size += 8;
+    }
+    if (mask & BULLET_FIELD_FLAGS.ANGLE) {
+      size += 4;
+    }
+    if (mask & BULLET_FIELD_FLAGS.OWNER) {
       size += 1 + ownerLength;
     }
   }
@@ -800,70 +1037,105 @@ function encodeStateUpdate({ players, removedPlayers, bullets, removedBullets })
 
   for (let i = 0; i < players.length; i += 1) {
     const player = players[i];
-    const idLength = byteLength(player.id);
-    const nameLength = player.fullSync && player.name ? byteLength(player.name) : 0;
+    const mask = player.fullSync ? PLAYER_FIELD_ALL : player.mask || 0;
+    const id = player.id || '';
+    const idLength = byteLength(id);
+    const includeName = (mask & PLAYER_FIELD_FLAGS.NAME) !== 0;
+    const nameValue = includeName && player.name ? player.name : '';
+    const nameLength = includeName ? byteLength(nameValue) : 0;
     let flags = 0;
     if (player.fullSync) flags |= 1;
     if (player.alive) flags |= 2;
     if (player.shieldActive) flags |= 4;
+    if (includeName) flags |= 8;
     buffer.writeUInt8(flags, offset);
     offset += 1;
     buffer.writeUInt8(idLength, offset);
     offset += 1;
-    offset += buffer.write(player.id, offset, idLength, 'utf8');
-    if (nameLength) {
+    if (idLength) {
+      offset += buffer.write(id, offset, idLength, 'utf8');
+    }
+    if (includeName) {
       buffer.writeUInt8(nameLength, offset);
       offset += 1;
-      offset += buffer.write(player.name, offset, nameLength, 'utf8');
+      if (nameLength) {
+        offset += buffer.write(nameValue, offset, nameLength, 'utf8');
+      }
     }
-    buffer.writeFloatLE(player.x, offset);
-    offset += 4;
-    buffer.writeFloatLE(player.y, offset);
-    offset += 4;
-    buffer.writeFloatLE(player.angle, offset);
-    offset += 4;
-    buffer.writeFloatLE(player.health, offset);
-    offset += 4;
-    buffer.writeFloatLE(player.score, offset);
-    offset += 4;
-    buffer.writeFloatLE(player.shieldCharge, offset);
-    offset += 4;
-    buffer.writeFloatLE(player.dashCharge, offset);
-    offset += 4;
+    buffer.writeUInt16LE(mask & 0xffff, offset);
+    offset += 2;
+    if (mask & PLAYER_FIELD_FLAGS.POSITION) {
+      buffer.writeFloatLE(player.x ?? 0, offset);
+      offset += 4;
+      buffer.writeFloatLE(player.y ?? 0, offset);
+      offset += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.ANGLE) {
+      buffer.writeFloatLE(player.angle ?? 0, offset);
+      offset += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.HEALTH) {
+      buffer.writeFloatLE(player.health ?? 0, offset);
+      offset += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.SCORE) {
+      buffer.writeFloatLE(player.score ?? 0, offset);
+      offset += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.SHIELD) {
+      buffer.writeFloatLE(player.shieldCharge ?? 0, offset);
+      offset += 4;
+    }
+    if (mask & PLAYER_FIELD_FLAGS.DASH) {
+      buffer.writeFloatLE(player.dashCharge ?? 0, offset);
+      offset += 4;
+    }
   }
 
   for (let i = 0; i < removedPlayers.length; i += 1) {
-    const id = removedPlayers[i];
+    const id = removedPlayers[i] || '';
     const idLength = byteLength(id);
     buffer.writeUInt8(idLength, offset);
     offset += 1;
-    offset += buffer.write(id, offset, idLength, 'utf8');
+    if (idLength) {
+      offset += buffer.write(id, offset, idLength, 'utf8');
+    }
   }
 
   for (let i = 0; i < bullets.length; i += 1) {
     const bullet = bullets[i];
-    const ownerLength = bullet.fullSync && bullet.owner ? byteLength(bullet.owner) : 0;
+    const mask = bullet.fullSync ? BULLET_FIELD_ALL : bullet.mask || 0;
+    const ownerValue = mask & BULLET_FIELD_FLAGS.OWNER ? bullet.owner || '' : '';
+    const ownerLength = mask & BULLET_FIELD_FLAGS.OWNER ? byteLength(ownerValue) : 0;
     const flags = bullet.fullSync ? 1 : 0;
     buffer.writeUInt8(flags, offset);
     offset += 1;
-    buffer.writeUInt32LE(bullet.id >>> 0, offset);
+    buffer.writeUInt32LE((bullet.id || 0) >>> 0, offset);
     offset += 4;
-    buffer.writeFloatLE(bullet.x, offset);
-    offset += 4;
-    buffer.writeFloatLE(bullet.y, offset);
-    offset += 4;
-    buffer.writeFloatLE(bullet.angle, offset);
-    offset += 4;
-    if (ownerLength) {
+    buffer.writeUInt8(mask & 0xff, offset);
+    offset += 1;
+    if (mask & BULLET_FIELD_FLAGS.POSITION) {
+      buffer.writeFloatLE(bullet.x ?? 0, offset);
+      offset += 4;
+      buffer.writeFloatLE(bullet.y ?? 0, offset);
+      offset += 4;
+    }
+    if (mask & BULLET_FIELD_FLAGS.ANGLE) {
+      buffer.writeFloatLE(bullet.angle ?? 0, offset);
+      offset += 4;
+    }
+    if (mask & BULLET_FIELD_FLAGS.OWNER) {
       buffer.writeUInt8(ownerLength, offset);
       offset += 1;
-      offset += buffer.write(bullet.owner, offset, ownerLength, 'utf8');
+      if (ownerLength) {
+        offset += buffer.write(ownerValue, offset, ownerLength, 'utf8');
+      }
     }
   }
 
   for (let i = 0; i < removedBullets.length; i += 1) {
     const id = removedBullets[i];
-    buffer.writeUInt32LE(id >>> 0, offset);
+    buffer.writeUInt32LE((id || 0) >>> 0, offset);
     offset += 4;
   }
 

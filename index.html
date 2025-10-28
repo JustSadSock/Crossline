@@ -186,6 +186,10 @@
     </article>
   </template>
 
+  <script>
+    window.CROSSLINE_API_URL = '<%= process.env.CROSSLINE_API_URL %>';
+    window.CROSSLINE_WS_URL = '<%= process.env.CROSSLINE_WS_URL %>';
+  </script>
   <script src="./scripts/runtime-config.js"></script>
   <script type="module" src="./scripts/main.js"></script>
 </body>

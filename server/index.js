@@ -2,7 +2,6 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const cluster = require('cluster');
-const os = require('os');
 const { promisify } = require('util');
 const WebSocket = require('ws');
 const {
@@ -12,33 +11,43 @@ const {
   pruneRooms,
   ensureDefaultRooms,
 } = require('./functions/roomManager');
+const config = require('./config');
+const logger = require('./logger');
+const monitoring = require('./monitoring');
 
 const readFile = promisify(fs.readFile);
 const access = promisify(fs.access);
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const STATIC_DIRS = new Set(['styles', 'scripts', 'assets']);
+const PING_INTERVAL_MS = Math.max(5000, parseInt(process.env.CROSSLINE_PING_INTERVAL_MS, 10) || 15000);
+const SECURITY_CONFIG = config.security;
+const CORS_ALLOWED_ORIGINS = SECURITY_CONFIG.cors.allowedOrigins;
+const CORS_ALLOW_SAME_HOST = SECURITY_CONFIG.cors.allowSameHost;
+const WS_ALLOWED_ORIGINS = SECURITY_CONFIG.websocket.allowedOrigins;
+const WS_ALLOW_SAME_HOST = SECURITY_CONFIG.websocket.allowSameHost;
+const MAX_BODY_BYTES = SECURITY_CONFIG.http.maxBodyBytes;
 
 bootstrap();
 
 function bootstrap() {
-  const clusterEnabled = shouldUseCluster();
+  const clusterEnabled = config.cluster.enabled;
   if (clusterEnabled && cluster.isPrimary) {
-    const workerCount = resolveWorkerCount();
-    console.log(`[CLUSTER] Primary ${process.pid} launching ${workerCount} workers`);
+    const workerCount = config.cluster.workers;
+    logger.info({ workerCount, pid: process.pid }, 'cluster primary launching workers');
     for (let index = 0; index < workerCount; index += 1) {
       cluster.fork();
     }
 
     cluster.on('online', (worker) => {
-      console.log(`[CLUSTER] Worker ${worker.process.pid} is online`);
+      logger.info({ worker: worker.process.pid }, 'cluster worker online');
     });
 
     cluster.on('exit', (worker, code, signal) => {
       const reason = signal ? `signal ${signal}` : `code ${code}`;
-      console.warn(`[CLUSTER] Worker ${worker.process.pid} exited (${reason})`);
+      logger.warn({ worker: worker.process.pid, reason }, 'cluster worker exited');
       if (code !== 0 && !signal) {
-        console.warn('[CLUSTER] Restarting worker...');
+        logger.warn('cluster restarting worker');
         cluster.fork();
       }
     });
@@ -46,7 +55,7 @@ function bootstrap() {
   }
 
   if (!clusterEnabled && cluster.isPrimary) {
-    console.log('[CLUSTER] Running in single-process mode');
+    logger.info('cluster disabled; running in single-process mode');
   }
 
   startServer();
@@ -60,13 +69,39 @@ function startServer() {
   let lastPortAttempted = null;
 
   if (cluster.isWorker) {
-    console.log(`[CLUSTER] Worker ${process.pid} starting game server`);
+    logger.info({ pid: process.pid }, 'cluster worker starting game server');
   }
 
   ensureDefaultRooms();
   setInterval(() => pruneRooms(), 60 * 1000);
 
   const server = http.createServer(async (req, res) => {
+    const start = process.hrtime.bigint();
+    const requestMeta = {
+      method: req.method,
+      url: req.url,
+      remoteAddress: req.socket && req.socket.remoteAddress,
+    };
+    let completed = false;
+    const logCompletion = () => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+      const statusCode = typeof res.statusCode === 'number' ? res.statusCode : Number(res.statusCode) || 0;
+      monitoring.trackRequest(statusCode);
+      logger.info({ ...requestMeta, statusCode, durationMs }, 'http request');
+    };
+    const logError = (error) => {
+      monitoring.trackError();
+      logger.error({ ...requestMeta, err: error }, 'http request error');
+    };
+
+    res.on('finish', logCompletion);
+    res.on('close', logCompletion);
+    res.on('error', logError);
+
     if (applyCors(req, res)) {
       return;
     }
@@ -90,10 +125,15 @@ function startServer() {
         res.writeHead(201);
         res.end(JSON.stringify(info));
       } catch (error) {
-        console.error('Failed to create room', error);
+        logError(error);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.writeHead(400);
-        res.end('Не удалось создать комнату');
+        if (error && error.code === 'LIMIT_BODY') {
+          res.writeHead(413);
+          res.end('Превышен размер запроса');
+        } else {
+          res.writeHead(400);
+          res.end('Не удалось создать комнату');
+        }
       }
       return;
     }
@@ -101,7 +141,12 @@ function startServer() {
     if (req.method === 'GET' && url.pathname === '/health') {
       res.setHeader('Content-Type', 'application/json');
       res.writeHead(200);
-      res.end(JSON.stringify({ status: 'ok' }));
+      res.end(
+        JSON.stringify({
+          status: 'ok',
+          metrics: monitoring.snapshot(),
+        }),
+      );
       return;
     }
 
@@ -111,12 +156,28 @@ function startServer() {
   server.keepAliveTimeout = 65000;
   server.headersTimeout = 66000;
 
-  const wss = new WebSocket.Server({ server });
+  const wss = new WebSocket.Server({
+    server,
+    verifyClient: (info, done) => {
+      if (allowWebSocketConnection(info)) {
+        done(true);
+        return;
+      }
+
+      const origin = info.origin || (info.req && info.req.headers && info.req.headers.origin) || '';
+      logger.warn({ origin }, 'blocked websocket handshake due to origin');
+      done(false, 403, 'Forbidden');
+    },
+  });
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const roomId = url.searchParams.get('room');
     const playerName = sanitizeName(url.searchParams.get('name') || '');
+    const connectionLog = logger.child({
+      roomId,
+      remoteAddress: req.socket && req.socket.remoteAddress,
+    });
 
     if (!roomId) {
       sendAndClose(ws, { type: 'error', message: 'Комната не указана' }, 1008);
@@ -137,23 +198,65 @@ function startServer() {
     let playerId;
     try {
       playerId = room.attachClient(ws, playerName);
+      ws.__playerId = playerId;
+      connectionLog.info({ playerId }, 'websocket client attached');
     } catch (error) {
-      console.error('Attach client error', error);
+      connectionLog.error({ err: error }, 'websocket attach error');
       sendAndClose(ws, { type: 'error', message: 'Не удалось присоединиться' }, 1011);
       return;
     }
+
+    const pingState = {
+      timer: null,
+      lastSentAt: 0,
+    };
+
+    const sendPing = () => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      pingState.lastSentAt = Date.now();
+      const buffer = Buffer.allocUnsafe(8);
+      buffer.writeDoubleBE(pingState.lastSentAt, 0);
+      try {
+        ws.ping(buffer, false);
+      } catch (error) {
+        connectionLog.warn({ err: error }, 'failed to send websocket ping');
+      }
+    };
+
+    pingState.timer = setInterval(sendPing, PING_INTERVAL_MS);
+    sendPing();
 
     ws.on('message', (data) => {
       room.handleMessage(playerId, data);
     });
 
     ws.on('close', () => {
+      if (pingState.timer) {
+        clearInterval(pingState.timer);
+      }
+      connectionLog.info({ playerId }, 'websocket client disconnected');
       room.detachClient(playerId);
     });
 
     ws.on('error', (error) => {
-      console.error('WebSocket error', error);
+      if (pingState.timer) {
+        clearInterval(pingState.timer);
+      }
+      monitoring.trackError();
+      connectionLog.error({ err: error, playerId }, 'websocket error');
       room.detachClient(playerId);
+    });
+
+    ws.on('pong', (data) => {
+      const sentAt =
+        Buffer.isBuffer(data) && data.length >= 8 ? data.readDoubleBE(0) : pingState.lastSentAt;
+      if (sentAt) {
+        const latency = Date.now() - sentAt;
+        monitoring.recordLatency(latency);
+        connectionLog.debug({ playerId, latency }, 'websocket latency sample');
+      }
     });
   });
 
@@ -173,8 +276,13 @@ function startServer() {
       const previousPort = lastPortAttempted;
       const nextPeek = candidatePorts[0];
       const nextLabel = typeof nextPeek === 'undefined' ? 'n/a' : nextPeek === 0 ? 'auto (random open port)' : nextPeek;
-      console.warn(
-        `[BOOT] Port ${previousPort === 0 ? 'auto' : previousPort} unavailable (${error.code}). Retrying on ${nextLabel}...`,
+      logger.warn(
+        {
+          attemptedPort: previousPort,
+          nextPort: nextLabel,
+          code: error.code,
+        },
+        'boot port unavailable; retrying',
       );
       setTimeout(() => attemptListen(), 750);
       return;
@@ -192,11 +300,11 @@ function startServer() {
   const attemptListen = () => {
     const nextPort = candidatePorts.shift();
     if (typeof nextPort === 'undefined') {
-      console.error('[BOOT] No available ports to bind. Exiting.');
+      logger.error('no available ports to bind; exiting');
       process.exit(1);
     }
     const label = nextPort === 0 ? 'auto (random open port)' : nextPort;
-    console.log(`[BOOT] Attempting to listen on port ${label}...`);
+    logger.info({ port: label }, 'attempting to listen');
     lastPortAttempted = nextPort;
     server.listen(nextPort);
   };
@@ -209,9 +317,9 @@ function startServer() {
     process.env.PORT = String(port);
     booting = false;
     if (port !== requestedPort) {
-      console.log(`[BOOT] Requested port ${requestedPort} unavailable. Using fallback port ${port}.`);
+      logger.warn({ requestedPort, port }, 'requested port unavailable; using fallback');
     }
-    console.log(`Server running on http://localhost:${port}`);
+    logger.info({ port }, 'server listening');
   });
 
   process.on('uncaughtException', (error) => {
@@ -224,11 +332,11 @@ function startServer() {
 }
 
 function logIssue(context, error) {
-  const stamp = new Date().toISOString();
+  monitoring.trackError();
   if (error instanceof Error) {
-    console.error(`[${stamp}] ${context}:`, error.stack || error.message);
+    logger.error({ err: error }, context);
   } else {
-    console.error(`[${stamp}] ${context}:`, error);
+    logger.error({ detail: error }, context);
   }
 }
 
@@ -289,16 +397,46 @@ function getMimeType(ext) {
 
 async function readRequestBody(req) {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    const abort = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    };
+
     req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 1e6) {
+      if (settled || !chunk) {
+        return;
+      }
+      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      chunks.push(bufferChunk);
+      totalBytes += bufferChunk.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        abort(createBodyLimitError());
         req.destroy();
-        reject(new Error('Body too large'));
+        return;
       }
     });
-    req.on('end', () => resolve(body));
-    req.on('error', (error) => reject(error));
+
+    req.on('end', () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        const buffer = Buffer.concat(chunks);
+        resolve(buffer.toString('utf8'));
+      } catch (error) {
+        reject(error);
+      }
+    });
+
+    req.on('error', abort);
   });
 }
 
@@ -341,6 +479,12 @@ function buildPortList(primary, fallback) {
   return ports;
 }
 
+function createBodyLimitError() {
+  const error = new Error('Body too large');
+  error.code = 'LIMIT_BODY';
+  return error;
+}
+
 function isBindError(error) {
   return (
     error instanceof Error &&
@@ -349,39 +493,30 @@ function isBindError(error) {
 }
 
 function applyCors(req, res) {
-  const rawOrigin = process.env.CROSSLINE_CORS_ORIGIN || '*';
-  const allowedOrigins = rawOrigin
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .map((value) => {
-      if (value === '*') {
-        return '*';
-      }
-      return value.replace(/\/+$/, '');
-    })
-    .filter(Boolean);
-  const allowAll = allowedOrigins.length === 0 || allowedOrigins.includes('*');
+  const originHeader = req.headers.origin;
+  const hasAllowedOrigins = CORS_ALLOWED_ORIGINS.size > 0;
 
-  if (!allowAll) {
+  if (originHeader) {
     appendVaryHeader(res, 'Origin');
-    const requestOrigin = req.headers.origin;
-    if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
-      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
-    } else if (requestOrigin) {
+    const isAllowed =
+      (hasAllowedOrigins && isOriginExplicitlyAllowed(originHeader)) ||
+      (CORS_ALLOW_SAME_HOST && isSameHostOrigin(originHeader, req.headers));
+
+    if (!isAllowed) {
       if (req.method === 'OPTIONS') {
-        res.writeHead(204);
+        res.writeHead(403);
         res.end();
       } else {
         res.writeHead(403);
         res.end('Недопустимый источник CORS');
       }
       return true;
-    } else {
-      res.setHeader('Access-Control-Allow-Origin', allowedOrigins[0]);
     }
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    res.setHeader('Access-Control-Allow-Origin', originHeader);
+  } else if (hasAllowedOrigins) {
+    // Non-browser clients without an Origin header should not receive an
+    // arbitrary allowed origin, so we omit the header.
   }
 
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -416,36 +551,47 @@ function appendVaryHeader(res, value) {
   }
 }
 
-function shouldUseCluster() {
-  if (process.env.CROSSLINE_CLUSTER === '0' || process.env.CROSSLINE_CLUSTER === 'false') {
+// cluster configuration is resolved centrally in server/config.js
+function isOriginExplicitlyAllowed(origin) {
+  if (!origin) {
     return false;
   }
-  const workers = resolveWorkerCount();
-  return workers > 1;
+
+  return CORS_ALLOWED_ORIGINS.has(origin.toLowerCase());
 }
 
-function resolveWorkerCount() {
-  const overrides = [process.env.CROSSLINE_CLUSTER_WORKERS, process.env.WEB_CONCURRENCY];
-  for (const value of overrides) {
-    const parsed = parseWorkerCount(value);
-    if (parsed > 0) {
-      return parsed;
-    }
+function isSameHostOrigin(origin, headers) {
+  if (!origin || !headers) {
+    return false;
   }
-  const cpuInfo = os.cpus();
-  if (Array.isArray(cpuInfo) && cpuInfo.length > 0) {
-    return cpuInfo.length;
+
+  const forwardedHost = headers['x-forwarded-host'];
+  const hostHeader = forwardedHost ? forwardedHost.split(',')[0].trim() : headers.host;
+  if (!hostHeader) {
+    return false;
   }
-  return 1;
+
+  try {
+    const parsed = new URL(origin);
+    return parsed.host.toLowerCase() === hostHeader.toLowerCase();
+  } catch (error) {
+    return false;
+  }
 }
 
-function parseWorkerCount(value) {
-  if (typeof value === 'undefined' || value === null || value === '') {
-    return 0;
+function allowWebSocketConnection(info) {
+  const origin = info.origin || (info.req && info.req.headers && info.req.headers.origin);
+  if (!origin) {
+    return true;
   }
-  const parsed = Number.parseInt(String(value), 10);
-  if (Number.isInteger(parsed) && parsed > 0) {
-    return parsed;
+
+  if (WS_ALLOWED_ORIGINS.size > 0 && WS_ALLOWED_ORIGINS.has(origin.toLowerCase())) {
+    return true;
   }
-  return 0;
+
+  if (WS_ALLOW_SAME_HOST && info.req && isSameHostOrigin(origin, info.req.headers)) {
+    return true;
+  }
+
+  return false;
 }

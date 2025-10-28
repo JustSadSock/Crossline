@@ -137,6 +137,7 @@ function updateDashUi(value) {
 }
 
 const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '::1'];
+const NETLIFY_HOST_RE = /\.netlify\.(app|dev)$/i;
 
 function isPrivateHostname(hostname) {
   if (!hostname) return false;
@@ -150,7 +151,11 @@ function isPrivateHostname(hostname) {
 }
 
 function isLocalEnvironment() {
-  return isPrivateHostname(window.location?.hostname);
+  const hostname = window.location?.hostname;
+  if (!hostname) {
+    return false;
+  }
+  return isPrivateHostname(hostname) || NETLIFY_HOST_RE.test(hostname);
 }
 
 function normalizeHttpUrl(rawUrl) {
@@ -1035,7 +1040,18 @@ function returnToLobby() {
   notifier.info('Вы вернулись в лобби.', { timeout: 3200 });
 }
 
-function init() {
+async function waitForRuntimeConfig() {
+  const ready = window.__crosslineConfigReady;
+  if (ready && typeof ready.then === 'function') {
+    try {
+      await ready;
+    } catch (error) {
+      console.warn('Runtime config detection failed', error);
+    }
+  }
+}
+
+async function init() {
   attachInputListeners();
   attachMobileControls();
   refreshRoomsBtn.addEventListener('click', loadRooms);
@@ -1070,7 +1086,10 @@ function init() {
     });
   }
   updateJoinButton();
-  loadRooms();
+  await waitForRuntimeConfig();
+  await loadRooms();
 }
 
-init();
+init().catch((error) => {
+  console.error('Failed to initialize Crossline lobby', error);
+});
