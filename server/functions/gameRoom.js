@@ -1,5 +1,4 @@
 const crypto = require('crypto');
-const WebSocket = require('ws');
 const {
   GAME_WIDTH,
   GAME_HEIGHT,
@@ -65,7 +64,9 @@ class GameRoom {
     clearInterval(this.interval);
     this.clients.forEach((ws) => {
       try {
-        ws.close(1001, 'room-closed');
+        if (ws && typeof ws.end === 'function') {
+          ws.end(1001, 'room-closed');
+        }
       } catch (error) {
         // ignore
       }
@@ -147,7 +148,13 @@ class GameRoom {
     });
     const snapshot = this.buildFullStateUpdate();
     if (snapshot.players.length || snapshot.bullets.length) {
-      ws.send(encodeStateUpdate(snapshot), { binary: true });
+      try {
+        if (typeof ws.send === 'function') {
+          ws.send(encodeStateUpdate(snapshot), true);
+        }
+      } catch (error) {
+        // ignore send errors
+      }
     }
     return playerId;
   }
@@ -556,8 +563,13 @@ class GameRoom {
     });
 
     this.clients.forEach((ws) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(payload, { binary: true });
+      if (!ws || ws.isClosed || typeof ws.send !== 'function') {
+        return;
+      }
+      try {
+        ws.send(payload, true);
+      } catch (error) {
+        // ignore send errors
       }
     });
   }
@@ -570,8 +582,13 @@ class GameRoom {
   }
 
   send(ws, payload) {
-    if (ws.readyState === WebSocket.OPEN) {
+    if (!ws || ws.isClosed || typeof ws.send !== 'function') {
+      return;
+    }
+    try {
       ws.send(JSON.stringify(payload));
+    } catch (error) {
+      // ignore send errors
     }
   }
 
