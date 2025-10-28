@@ -56,6 +56,9 @@ const server = http.createServer(async (req, res) => {
   serveStatic(url.pathname, res);
 });
 
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws, req) => {
@@ -102,8 +105,44 @@ wss.on('connection', (ws, req) => {
   });
 });
 
+server.on('clientError', (error, socket) => {
+  logIssue('HTTP client error', error);
+  if (socket && !socket.destroyed) {
+    try {
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    } catch (socketError) {
+      logIssue('Failed to close client socket gracefully', socketError);
+    }
+  }
+});
+
+server.on('error', (error) => {
+  logIssue('HTTP server error', error);
+});
+
+wss.on('error', (error) => {
+  logIssue('WebSocket server error', error);
+});
+
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+});
+
+function logIssue(context, error) {
+  const stamp = new Date().toISOString();
+  if (error instanceof Error) {
+    console.error(`[${stamp}] ${context}:`, error.stack || error.message);
+  } else {
+    console.error(`[${stamp}] ${context}:`, error);
+  }
+}
+
+process.on('uncaughtException', (error) => {
+  logIssue('Uncaught exception', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logIssue('Unhandled rejection', reason);
 });
 
 async function serveStatic(requestPath, res) {

@@ -23,6 +23,7 @@ const respawnBtn = document.getElementById('respawn-btn');
 const mobileControls = document.getElementById('mobile-controls');
 const mobileFire = document.getElementById('mobile-fire');
 const roomTemplate = document.getElementById('room-template');
+const notificationsRoot = document.getElementById('notifications');
 
 const inputState = {
   keys: new Set(),
@@ -36,6 +37,10 @@ const state = {
   currentGame: null,
   currentMode: null,
 };
+
+const notifier = createNotifier(notificationsRoot);
+const ROOMS_ERROR_COOLDOWN = 4000;
+let lastRoomsErrorAt = 0;
 
 const ui = {
   reset() {
@@ -109,6 +114,96 @@ function updateScoreboard(entries) {
   }
 }
 
+function createNotifier(container) {
+  if (!container) {
+    return {
+      show() {},
+      info() {},
+      success() {},
+      warning() {},
+      error() {},
+    };
+  }
+  const icons = {
+    info: '🛈',
+    success: '✔',
+    warning: '⚠',
+    error: '✖',
+  };
+
+  const show = (type, message, { timeout = 5000 } = {}) => {
+    const node = document.createElement('div');
+    node.className = `notification notification--${type}`;
+    node.setAttribute('role', type === 'error' ? 'alert' : 'status');
+
+    const icon = document.createElement('span');
+    icon.className = 'notification__icon';
+    icon.textContent = icons[type] || icons.info;
+
+    const body = document.createElement('div');
+    body.className = 'notification__body';
+    body.textContent = message;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'notification__close';
+    closeBtn.setAttribute('aria-label', 'Закрыть уведомление');
+    closeBtn.innerHTML = '&times;';
+
+    let hideTimer = null;
+
+    const close = () => {
+      if (node.dataset.state === 'closing') return;
+      node.dataset.state = 'closing';
+    };
+
+    if (timeout > 0) {
+      hideTimer = setTimeout(close, timeout);
+    }
+
+    node.addEventListener('mouseenter', () => {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    });
+
+    node.addEventListener('mouseleave', () => {
+      if (timeout > 0 && !hideTimer && node.dataset.state !== 'closing') {
+        hideTimer = setTimeout(close, 1600);
+      }
+    });
+
+    closeBtn.addEventListener('click', close);
+
+    node.addEventListener('animationend', (event) => {
+      if (event.animationName === 'notification-out') {
+        node.remove();
+      }
+    });
+
+    node.append(icon, body, closeBtn);
+    container.append(node);
+    return { close };
+  };
+
+  return {
+    show,
+    info(message, options) {
+      return show('info', message, options);
+    },
+    success(message, options) {
+      return show('success', message, options);
+    },
+    warning(message, options) {
+      return show('warning', message, options);
+    },
+    error(message, options) {
+      return show('error', message, options);
+    },
+  };
+}
+
 function sanitizeName(value) {
   const clean = value.trim().replace(/[^a-zA-Z0-9а-яА-Я_\- ]/g, '');
   if (clean) {
@@ -176,6 +271,11 @@ async function loadRooms() {
     fail.className = 'room-card__meta';
     fail.textContent = 'Не удалось получить список комнат.';
     roomsList.append(fail);
+    const now = Date.now();
+    if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
+      notifier.error('Не удалось получить список комнат. Проверьте сервер или туннель.', { timeout: 6000 });
+      lastRoomsErrorAt = now;
+    }
   }
 }
 
@@ -213,9 +313,10 @@ async function handleCreateRoom(event) {
       selectRoom(room.id, created);
       created.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
+    notifier.success(`Комната «${room.name}» готова к старту.`, { timeout: 5000 });
   } catch (error) {
     console.error('Create room error', error);
-    alert('Не удалось создать комнату. Проверьте сервер.');
+    notifier.error('Не удалось создать комнату. Проверьте сервер.');
   }
 }
 
@@ -321,7 +422,7 @@ window.addEventListener('resize', () => {
 
 async function startOnlineGame() {
   if (!state.selectedRoomId) {
-    alert('Выберите комнату.');
+    notifier.warning('Сначала выберите комнату или создайте новую арену.');
     return;
   }
   stopCurrentGame();
@@ -334,9 +435,12 @@ async function startOnlineGame() {
   try {
     await game.start({ roomId: state.selectedRoomId, playerName: name });
     ui.setMode('online', state.selectedRoomId);
+    const roomTitle = state.selectedRoomElement?.querySelector('.room-card__title')?.textContent?.trim();
+    notifier.success(`Вы подключены к комнате ${roomTitle ? `«${roomTitle}»` : state.selectedRoomId}.`, { timeout: 5200 });
   } catch (error) {
     console.error('Online game failed', error);
     ui.setStatus('Ошибка подключения', 'error');
+    notifier.error('Не удалось подключиться к комнате. Попробуйте позже.', { timeout: 6000 });
   }
 }
 
@@ -351,6 +455,7 @@ function startOfflineGame() {
   game.start({ difficulty, playerName: sanitizeName(playerNameInput.value || '') });
   ui.setMode('offline', difficulty);
   ui.setStatus('Вы против синтетика', 'success');
+  notifier.info('Офлайн бой запущен. Удачной охоты!', { timeout: 4500 });
 }
 
 function stopCurrentGame() {
@@ -366,6 +471,7 @@ function returnToLobby() {
   stopCurrentGame();
   toggleView(false);
   ui.reset();
+  notifier.info('Вы вернулись в лобби.', { timeout: 3200 });
 }
 
 function init() {

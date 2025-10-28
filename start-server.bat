@@ -5,10 +5,10 @@ rem ===== Crossline: zero-input launcher (server + ngrok + deps) =====
 cd /d "%~dp0"
 
 rem -------- Settings (edit once if you want) --------
-if not defined PORT set "PORT=3000"
+if not defined PORT set "PORT=80"
 if not defined NGROK_EXE set "NGROK_EXE=ngrok"
-rem Optional: hardcode token once and forget:
-rem set "NGROK_AUTHTOKEN=PASTE_TOKEN_HERE"
+if not defined NGROK_AUTHTOKEN set "NGROK_AUTHTOKEN=316t6ozoUFVJPzOC0KV01Ln93M5_ARhwXXj9eAtjqAwEDNtz"
+rem (you can override NGROK_AUTHTOKEN/PORT via environment before launching)
 
 rem -------- Check Node --------
 where node >nul 2>&1

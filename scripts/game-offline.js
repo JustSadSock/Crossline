@@ -264,10 +264,17 @@ export class OfflineGame {
     const scaleX = this.canvas.width / GAME_WIDTH;
     const scaleY = this.canvas.height / GAME_HEIGHT;
 
-    ctx.fillStyle = '#060812';
+    const gradient = ctx.createLinearGradient(0, 0, this.canvas.width, this.canvas.height);
+    gradient.addColorStop(0, '#050813');
+    gradient.addColorStop(0.55, '#09132a');
+    gradient.addColorStop(1, '#03040c');
+    ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-    ctx.strokeStyle = 'rgba(77, 246, 255, 0.1)';
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = 'rgba(77, 246, 255, 0.12)';
+    ctx.lineWidth = 1;
     for (let x = 0; x < GAME_WIDTH; x += 70) {
       ctx.beginPath();
       ctx.moveTo(x * scaleX, 0);
@@ -280,32 +287,52 @@ export class OfflineGame {
       ctx.lineTo(this.canvas.width, y * scaleY);
       ctx.stroke();
     }
+    ctx.restore();
+
+    ctx.save();
+    const sweep = (performance.now() % 4500) / 4500;
+    const sweepY = sweep * this.canvas.height;
+    const sweepOpacity = 0.18 + Math.sin(sweep * Math.PI) * 0.08;
+    ctx.fillStyle = `rgba(77, 246, 255, ${sweepOpacity.toFixed(3)})`;
+    ctx.fillRect(0, sweepY, this.canvas.width, 3);
+    ctx.restore();
 
     this.bullets.forEach((bullet) => {
       const bx = bullet.x * scaleX;
       const by = bullet.y * scaleY;
-      ctx.fillStyle = bullet.owner === 'player' ? '#4df6ff' : '#ff4d7a';
+      const color = bullet.owner === 'player' ? '#4df6ff' : '#ff4d7a';
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 12;
       ctx.beginPath();
       ctx.arc(bx, by, 4, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
     });
 
     Object.values(this.players).forEach((player) => {
       const px = player.x * scaleX;
       const py = player.y * scaleY;
-      ctx.fillStyle = player.id === 'player' ? '#4df6ff' : '#ff2cfb';
-      ctx.globalAlpha = player.alive ? 1 : 0.2;
+      const color = player.id === 'player' ? '#4df6ff' : '#ff2cfb';
+      ctx.save();
+      ctx.globalAlpha = player.alive ? 1 : 0.25;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = player.alive ? 22 : 12;
       ctx.beginPath();
       ctx.arc(px, py, PLAYER_RADIUS, 0, Math.PI * 2);
       ctx.fill();
-      ctx.globalAlpha = 1;
+      ctx.restore();
 
-      ctx.strokeStyle = '#ffffff';
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(px, py);
       ctx.lineTo(px + Math.cos(player.angle) * 22, py + Math.sin(player.angle) * 22);
       ctx.stroke();
+      ctx.restore();
 
       const barWidth = 36;
       const barHeight = 6;
@@ -325,8 +352,11 @@ export class OfflineGame {
     if (this.players.player && this.players.player.alive) {
       const pointerX = this.input.pointer.x;
       const pointerY = this.input.pointer.y;
-      ctx.strokeStyle = 'rgba(77, 246, 255, 0.8)';
+      ctx.save();
+      ctx.strokeStyle = 'rgba(77, 246, 255, 0.85)';
       ctx.lineWidth = 2;
+      ctx.shadowColor = 'rgba(77, 246, 255, 0.6)';
+      ctx.shadowBlur = 12;
       ctx.beginPath();
       ctx.arc(pointerX, pointerY, 10, 0, Math.PI * 2);
       ctx.stroke();
@@ -336,6 +366,7 @@ export class OfflineGame {
       ctx.moveTo(pointerX, pointerY - 10);
       ctx.lineTo(pointerX, pointerY + 10);
       ctx.stroke();
+      ctx.restore();
     }
   }
 }
