@@ -95,11 +95,12 @@ echo   %NGROK_LOG%
 echo Starting server on http://localhost:%PORT%
 
 rem -------- Launch server in its own window (kept open) --------
-start "Crossline Server" cmd /k "set PORT=%PORT% && %SERVER_CMD% ^>^> ^"%SERVER_LOG%^" 2^>^&1"
+set "SCRIPT_DIR=%cd%"
+start "Crossline Server" cmd /k "cd /d ^"%SCRIPT_DIR%^" && set PORT=%PORT% && %SERVER_CMD% ^>^> ^"%SERVER_LOG%^" 2^>^&1"
 
 rem -------- Launch ngrok in its own window (kept open) --------
 echo Starting ngrok tunnel to localhost:%PORT%
-start "ngrok Tunnel" cmd /k ""%NGROK_CMD%" http %PORT% --log=stdout ^>^> ^"%NGROK_LOG%^" 2^>^&1"
+start "ngrok Tunnel" cmd /k "cd /d ^"%SCRIPT_DIR%^" && "%NGROK_CMD%" http %PORT% --log=stdout ^>^> ^"%NGROK_LOG%^" 2^>^&1"
 
 echo Ready. Child consoles stay open. You can close this parent window anytime.
 pause
