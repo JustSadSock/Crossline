@@ -5,19 +5,50 @@ const BULLET_RADIUS = 4;
 const MOVE_SPEED = 4.2;
 const BULLET_SPEED = 9;
 const DAMAGE = 22;
-const SHIELD_MAX_CHARGE = 5000;
+const SHIELD_MAX_CHARGE = 3334;
 const SHIELD_RECHARGE_FACTOR = 0.5;
 const SHIELD_ARC = Math.PI * 0.9;
 const SHIELD_RADIUS = PLAYER_RADIUS + 22;
+const SHIELD_REFLECTION_DRAIN = 0.1;
 const DASH_MAX_CHARGES = 3;
 const DASH_RECHARGE_MS = 5000;
-const DASH_DISTANCE = 160;
+const DASH_DISTANCE = 136;
 
 const BOT_DIFFICULTY = {
   easy: { speed: 2.6, fireRate: 650, accuracy: 0.6 },
   normal: { speed: 3.2, fireRate: 480, accuracy: 0.75 },
   hard: { speed: 3.9, fireRate: 360, accuracy: 0.9 },
 };
+
+const SHIELD_COLOR_FULL_A = { r: 77, g: 246, b: 255 };
+const SHIELD_COLOR_FULL_B = { r: 255, g: 44, b: 251 };
+const SHIELD_COLOR_DRAINED_A = { r: 48, g: 94, b: 120 };
+const SHIELD_COLOR_DRAINED_B = { r: 108, g: 62, b: 112 };
+const DASH_TRAIL_DURATION = 280;
+
+function mixChannel(a, b, t) {
+  return Math.round(a + (b - a) * t);
+}
+
+function mixColor(colorA, colorB, t) {
+  return {
+    r: mixChannel(colorA.r, colorB.r, t),
+    g: mixChannel(colorA.g, colorB.g, t),
+    b: mixChannel(colorA.b, colorB.b, t),
+  };
+}
+
+function colorToRgba({ r, g, b }, alpha = 1) {
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function getShieldColors(ratio) {
+  const t = Math.min(1, Math.max(0, 1 - ratio));
+  return {
+    primary: mixColor(SHIELD_COLOR_FULL_A, SHIELD_COLOR_DRAINED_A, t),
+    secondary: mixColor(SHIELD_COLOR_FULL_B, SHIELD_COLOR_DRAINED_B, t),
+  };
+}
 
 function normalizeAngle(angle) {
   let value = angle;
@@ -41,6 +72,7 @@ export class OfflineGame {
     this.lastShotAt = 0;
     this.botShotAt = 0;
     this.lastFrameTime = 0;
+    this.dashTrails = [];
   }
 
   start({ difficulty = 'normal', playerName = 'Pilot' }) {
@@ -103,6 +135,7 @@ export class OfflineGame {
     this.bullets = [];
     this.lastShotAt = 0;
     this.botShotAt = 0;
+    this.dashTrails = [];
     this.ui.setHealth(100);
     this.ui.toggleRespawn(false);
     this.ui.setScoreboard([
@@ -132,6 +165,16 @@ export class OfflineGame {
     bot.shieldCharge = SHIELD_MAX_CHARGE;
     bot.dashCharge = DASH_MAX_CHARGES;
     bot.lastMoveDirection = { x: -1, y: 0 };
+  }
+
+  recordDashTrail(fromX, fromY, toX, toY) {
+    this.dashTrails.push({
+      fromX,
+      fromY,
+      toX,
+      toY,
+      start: performance.now(),
+    });
   }
 
   loop() {
@@ -202,13 +245,8 @@ export class OfflineGame {
     }
     player.angle = Math.atan2(targetY - player.y, targetX - player.x);
 
-    const now = performance.now();
-    if (this.input.fire && now - this.lastShotAt > 220 && player.alive) {
-      this.spawnBullet(player);
-      this.lastShotAt = now;
-    }
-
-    if (this.input.shield && player.shieldCharge > 0) {
+    const wantsShield = this.input.shield && player.shieldCharge > 0;
+    if (wantsShield) {
       player.shieldActive = true;
       player.shieldCharge = Math.max(0, player.shieldCharge - delta);
       if (player.shieldCharge <= 0) {
@@ -222,8 +260,22 @@ export class OfflineGame {
       );
     }
 
+    const now = performance.now();
+    if (
+      this.input.fire &&
+      !player.shieldActive &&
+      !this.input.shield &&
+      now - this.lastShotAt > 220 &&
+      player.alive
+    ) {
+      this.spawnBullet(player);
+      this.lastShotAt = now;
+    }
+
     const dashRequested = this.input.consumeDashRequest();
     if (dashRequested && player.dashCharge >= 1) {
+      const fromX = player.x;
+      const fromY = player.y;
       const baseX = magnitude > 0.01 ? combinedX / magnitude : player.lastMoveDirection.x || Math.cos(player.angle);
       const baseY = magnitude > 0.01 ? combinedY / magnitude : player.lastMoveDirection.y || Math.sin(player.angle);
       const dirLength = Math.hypot(baseX, baseY) || 1;
@@ -234,6 +286,7 @@ export class OfflineGame {
       player.dashCharge = Math.max(0, player.dashCharge - 1);
       player.x = Math.max(PLAYER_RADIUS, Math.min(GAME_WIDTH - PLAYER_RADIUS, player.x));
       player.y = Math.max(PLAYER_RADIUS, Math.min(GAME_HEIGHT - PLAYER_RADIUS, player.y));
+      this.recordDashTrail(fromX, fromY, player.x, player.y);
     }
 
     player.dashCharge = Math.min(
@@ -316,6 +369,11 @@ export class OfflineGame {
             const offset = SHIELD_RADIUS + 6;
             bullet.x = target.x + Math.cos(target.angle) * offset;
             bullet.y = target.y + Math.sin(target.angle) * offset;
+            const drain = SHIELD_MAX_CHARGE * SHIELD_REFLECTION_DRAIN;
+            target.shieldCharge = Math.max(0, target.shieldCharge - drain);
+            if (target.shieldCharge <= 0) {
+              target.shieldActive = false;
+            }
             return true;
           }
         }
@@ -407,6 +465,35 @@ export class OfflineGame {
     ctx.fillRect(0, sweepY, this.canvas.width, 3);
     ctx.restore();
 
+    const nowTime = performance.now();
+    this.dashTrails = this.dashTrails.filter((trail) => {
+      const age = nowTime - trail.start;
+      if (age > DASH_TRAIL_DURATION) {
+        return false;
+      }
+      const t = Math.max(0, Math.min(1, age / DASH_TRAIL_DURATION));
+      const startX = trail.fromX * scaleX;
+      const startY = trail.fromY * scaleY;
+      const endX = trail.toX * scaleX;
+      const endY = trail.toY * scaleY;
+      const gradient = ctx.createLinearGradient(startX, startY, endX, endY);
+      gradient.addColorStop(0, colorToRgba(SHIELD_COLOR_FULL_A, 0.45 * (1 - t) + 0.25));
+      gradient.addColorStop(1, colorToRgba(SHIELD_COLOR_FULL_B, 0.35 * (1 - t) + 0.15));
+      ctx.save();
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = 22 * (1 - t) + 6;
+      ctx.lineCap = 'round';
+      ctx.shadowColor = 'rgba(77, 246, 255, 0.45)';
+      ctx.shadowBlur = 18 * (1 - t);
+      ctx.globalAlpha = 0.9 * (1 - t);
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
+      ctx.restore();
+      return true;
+    });
+
     this.bullets.forEach((bullet) => {
       const bx = bullet.x * scaleX;
       const by = bullet.y * scaleY;
@@ -437,10 +524,11 @@ export class OfflineGame {
 
       if (player.shieldActive && player.shieldCharge > 0) {
         const shieldRatio = player.shieldCharge / SHIELD_MAX_CHARGE;
+        const colors = getShieldColors(shieldRatio);
         const radius = (PLAYER_RADIUS + 18) * ((scaleX + scaleY) / 2);
         ctx.save();
-        ctx.globalAlpha = 0.4 + shieldRatio * 0.35;
-        ctx.fillStyle = 'rgba(77, 246, 255, 0.25)';
+        ctx.globalAlpha = 0.35 + shieldRatio * 0.35;
+        ctx.fillStyle = colorToRgba(colors.secondary, 0.22 + shieldRatio * 0.2);
         ctx.beginPath();
         ctx.moveTo(px, py);
         ctx.arc(px, py, radius, player.angle - SHIELD_ARC / 2, player.angle + SHIELD_ARC / 2);
@@ -449,9 +537,10 @@ export class OfflineGame {
         ctx.restore();
 
         ctx.save();
-        ctx.strokeStyle = 'rgba(77, 246, 255, 0.9)';
-        ctx.lineWidth = 6;
-        ctx.globalAlpha = 0.7 + shieldRatio * 0.2;
+        ctx.strokeStyle = colorToRgba(colors.primary, 0.75 + shieldRatio * 0.2);
+        ctx.lineWidth = 5.5;
+        ctx.shadowColor = colorToRgba(colors.primary, 0.65);
+        ctx.shadowBlur = 14 + shieldRatio * 8;
         ctx.beginPath();
         ctx.arc(px, py, radius, player.angle - SHIELD_ARC / 2, player.angle + SHIELD_ARC / 2);
         ctx.stroke();

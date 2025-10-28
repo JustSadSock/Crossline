@@ -11,6 +11,7 @@ const {
   SHIELD_RECHARGE_FACTOR,
   SHIELD_ARC,
   SHIELD_RADIUS,
+  SHIELD_REFLECTION_DRAIN,
   DASH_MAX_CHARGES,
   DASH_RECHARGE_MS,
   DASH_DISTANCE,
@@ -145,6 +146,9 @@ class GameRoom {
       player.lastMoveMessageAt = now;
       this.lastActivity = now;
     } else if (message.type === 'shoot' && player.alive) {
+      if (player.shieldActive || player.shieldRequested) {
+        return;
+      }
       this.spawnBullet(playerId);
       this.lastActivity = now;
     } else if (message.type === 'respawn' && !player.alive) {
@@ -262,6 +266,12 @@ class GameRoom {
             const offset = SHIELD_RADIUS + 6;
             bullet.x = player.x + Math.cos(player.angle) * offset;
             bullet.y = player.y + Math.sin(player.angle) * offset;
+            const drain = SHIELD_MAX_CHARGE * SHIELD_REFLECTION_DRAIN;
+            player.shieldCharge = Math.max(0, player.shieldCharge - drain);
+            if (player.shieldCharge <= 0) {
+              player.shieldActive = false;
+              player.shieldRequested = false;
+            }
             return true;
           }
         }

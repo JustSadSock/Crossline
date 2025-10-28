@@ -74,10 +74,41 @@ const MOVEMENT_KEY_MAP = {
   ArrowRight: 'd',
 };
 
+const SHIELD_UI_FULL_A = { r: 77, g: 246, b: 255 };
+const SHIELD_UI_FULL_B = { r: 255, g: 44, b: 251 };
+const SHIELD_UI_DRAINED_A = { r: 48, g: 104, b: 132 };
+const SHIELD_UI_DRAINED_B = { r: 120, g: 76, b: 126 };
+
+function mixChannel(a, b, t) {
+  return Math.round(a + (b - a) * t);
+}
+
+function mixColor(colorA, colorB, t) {
+  return {
+    r: mixChannel(colorA.r, colorB.r, t),
+    g: mixChannel(colorA.g, colorB.g, t),
+    b: mixChannel(colorA.b, colorB.b, t),
+  };
+}
+
+function colorToCss({ r, g, b }) {
+  const toHex = (value) => value.toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function getShieldUiGradient(ratio) {
+  const t = Math.min(1, Math.max(0, 1 - ratio));
+  const start = mixColor(SHIELD_UI_FULL_A, SHIELD_UI_DRAINED_A, t);
+  const end = mixColor(SHIELD_UI_FULL_B, SHIELD_UI_DRAINED_B, t);
+  return { start: colorToCss(start), end: colorToCss(end) };
+}
+
 function updateShieldUi(ratio, active) {
   if (!shieldFill || !shieldValue) return;
   const clamped = Math.max(0, Math.min(1, ratio));
+  const gradient = getShieldUiGradient(clamped);
   shieldFill.style.width = `${(clamped * 100).toFixed(1)}%`;
+  shieldFill.style.background = `linear-gradient(120deg, ${gradient.start}, ${gradient.end})`;
   if (active) {
     shieldFill.dataset.state = 'active';
   } else if (clamped < 1) {
@@ -86,6 +117,7 @@ function updateShieldUi(ratio, active) {
     delete shieldFill.dataset.state;
   }
   shieldValue.textContent = `${Math.round(clamped * 100)}%`;
+  shieldValue.style.color = gradient.end;
 }
 
 function updateDashUi(value) {
@@ -374,6 +406,16 @@ function centerPointer() {
   inputState.aimVector.active = false;
 }
 
+function setPointerFromClientPosition(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = rect.width ? canvas.width / rect.width : 1;
+  const scaleY = rect.height ? canvas.height / rect.height : 1;
+  const x = (clientX - rect.left) * scaleX;
+  const y = (clientY - rect.top) * scaleY;
+  inputState.pointer.x = Math.max(0, Math.min(canvas.width, x));
+  inputState.pointer.y = Math.max(0, Math.min(canvas.height, y));
+}
+
 async function loadRooms() {
   roomsList.innerHTML = '<p class="room-card__meta">Загрузка комнат…</p>';
   playOnlineBtn.disabled = true;
@@ -572,6 +614,7 @@ function attachInputListeners() {
         event.preventDefault();
       }
       inputState.shield = true;
+      inputState.fire = false;
     }
   });
   document.addEventListener('keyup', (event) => {
@@ -594,9 +637,7 @@ function attachInputListeners() {
     }
   });
   canvas.addEventListener('mousemove', (event) => {
-    const rect = canvas.getBoundingClientRect();
-    inputState.pointer.x = event.clientX - rect.left;
-    inputState.pointer.y = event.clientY - rect.top;
+    setPointerFromClientPosition(event.clientX, event.clientY);
   });
   canvas.addEventListener('contextmenu', (event) => {
     event.preventDefault();
@@ -604,8 +645,11 @@ function attachInputListeners() {
   canvas.addEventListener('mousedown', (event) => {
     if (event.button === 2) {
       inputState.shield = true;
+      inputState.fire = false;
     } else if (event.button === 0) {
-      inputState.fire = true;
+      if (!inputState.shield) {
+        inputState.fire = true;
+      }
     }
   });
   document.addEventListener('mouseup', (event) => {
@@ -621,19 +665,17 @@ function attachInputListeners() {
       event.preventDefault();
     }
     const touch = event.changedTouches[0];
-    const rect = canvas.getBoundingClientRect();
-    inputState.pointer.x = touch.clientX - rect.left;
-    inputState.pointer.y = touch.clientY - rect.top;
-    inputState.fire = true;
+    setPointerFromClientPosition(touch.clientX, touch.clientY);
+    if (!inputState.shield) {
+      inputState.fire = true;
+    }
   }, { passive: false });
   canvas.addEventListener('touchmove', (event) => {
     if (event.cancelable) {
       event.preventDefault();
     }
     const touch = event.changedTouches[0];
-    const rect = canvas.getBoundingClientRect();
-    inputState.pointer.x = touch.clientX - rect.left;
-    inputState.pointer.y = touch.clientY - rect.top;
+    setPointerFromClientPosition(touch.clientX, touch.clientY);
   }, { passive: false });
   canvas.addEventListener('touchend', (event) => {
     if (event.cancelable) {
@@ -748,6 +790,7 @@ function attachMobileControls() {
 
   bindButton(mobileShield, () => {
     inputState.shield = true;
+    inputState.fire = false;
   }, () => {
     inputState.shield = false;
   });
