@@ -14,7 +14,11 @@ const {
 const readFile = promisify(fs.readFile);
 const access = promisify(fs.access);
 
-const PORT = process.env.PORT || 3000;
+const DEFAULT_PORT = 3000;
+const requestedPort = parsePort(process.env.PORT, DEFAULT_PORT);
+const candidatePorts = buildPortList(requestedPort, DEFAULT_PORT);
+let booting = true;
+let lastPortAttempted = null;
 const ROOT_DIR = path.resolve(__dirname, '..');
 const STATIC_DIRS = new Set(['styles', 'scripts', 'assets']);
 
@@ -55,6 +59,9 @@ const server = http.createServer(async (req, res) => {
 
   serveStatic(url.pathname, res);
 });
+
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 
 const wss = new WebSocket.Server({ server });
 
@@ -102,9 +109,79 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+server.on('clientError', (error, socket) => {
+  logIssue('HTTP client error', error);
+  if (socket && !socket.destroyed) {
+    try {
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    } catch (socketError) {
+      logIssue('Failed to close client socket gracefully', socketError);
+    }
+  }
 });
+
+server.on('error', (error) => {
+  if (booting && isBindError(error) && candidatePorts.length) {
+    const previousPort = lastPortAttempted;
+    const nextPeek = candidatePorts[0];
+    const nextLabel = typeof nextPeek === 'undefined' ? 'n/a' : nextPeek === 0 ? 'auto (random open port)' : nextPeek;
+    console.warn(
+      `[BOOT] Port ${previousPort === 0 ? 'auto' : previousPort} unavailable (${error.code}). Retrying on ${nextLabel}...`,
+    );
+    setTimeout(() => attemptListen(), 750);
+    return;
+  }
+  logIssue('HTTP server error', error);
+});
+
+wss.on('error', (error) => {
+  if (booting && isBindError(error)) {
+    return;
+  }
+  logIssue('WebSocket server error', error);
+});
+
+attemptListen();
+
+server.on('listening', () => {
+  const address = server.address();
+  const port = typeof address === 'string' ? requestedPort : address.port;
+  process.env.PORT = String(port);
+  booting = false;
+  if (port !== requestedPort) {
+    console.log(`[BOOT] Requested port ${requestedPort} unavailable. Using fallback port ${port}.`);
+  }
+  console.log(`Server running on http://localhost:${port}`);
+});
+
+function logIssue(context, error) {
+  const stamp = new Date().toISOString();
+  if (error instanceof Error) {
+    console.error(`[${stamp}] ${context}:`, error.stack || error.message);
+  } else {
+    console.error(`[${stamp}] ${context}:`, error);
+  }
+}
+
+process.on('uncaughtException', (error) => {
+  logIssue('Uncaught exception', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logIssue('Unhandled rejection', reason);
+});
+
+function attemptListen() {
+  const nextPort = candidatePorts.shift();
+  if (typeof nextPort === 'undefined') {
+    console.error('[BOOT] No available ports to bind. Exiting.');
+    process.exit(1);
+  }
+  const label = nextPort === 0 ? 'auto (random open port)' : nextPort;
+  console.log(`[BOOT] Attempting to listen on port ${label}...`);
+  lastPortAttempted = nextPort;
+  server.listen(nextPort);
+}
 
 async function serveStatic(requestPath, res) {
   let filePath;
@@ -191,4 +268,31 @@ function sendAndClose(ws, payload, code = 1000) {
   } catch (error) {
     // ignore
   }
+}
+
+function parsePort(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
+    return parsed;
+  }
+  return fallback;
+}
+
+function buildPortList(primary, fallback) {
+  const ports = [primary];
+  if (primary !== fallback) {
+    ports.push(fallback);
+  }
+  if (primary !== 3000 && fallback !== 3000) {
+    ports.push(3000);
+  }
+  ports.push(0);
+  return ports;
+}
+
+function isBindError(error) {
+  return (
+    error instanceof Error &&
+    (error.code === 'EADDRINUSE' || error.code === 'EACCES' || error.code === 'EADDRNOTAVAIL')
+  );
 }
