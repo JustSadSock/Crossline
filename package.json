@@ -1,0 +1,16 @@
+{
+  "name": "crossline",
+  "version": "1.0.0",
+  "description": "A browser-based multiplayer shooter game",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "keywords": ["game", "shooter", "multiplayer", "websocket"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.14.2"
+  }
+}
