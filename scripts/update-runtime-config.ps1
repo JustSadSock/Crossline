@@ -30,7 +30,7 @@ while ((Get-Date) -lt $deadline) {
 }
 
 if (-not $publicUrl) {
-    exit 1
+    throw "Ngrok tunnel не найден в течение $TimeoutSeconds секунд."
 }
 
 try {
