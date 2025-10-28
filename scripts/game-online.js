@@ -4,11 +4,12 @@ const MOVE_SPEED = 4.6;
 const SHOT_COOLDOWN = 200;
 
 export class OnlineGame {
-  constructor({ canvas, inputState, ui }) {
+  constructor({ canvas, inputState, ui, wsBaseUrl }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.input = inputState;
     this.ui = ui;
+    this.wsBaseUrl = wsBaseUrl;
     this.players = {};
     this.bullets = [];
     this.playerId = null;
@@ -24,9 +25,15 @@ export class OnlineGame {
   start({ roomId, playerName }) {
     this.roomId = roomId;
     return new Promise((resolve, reject) => {
-      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = `${protocol}//${window.location.host}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
-      this.ws = new WebSocket(url);
+      // Use configured wsBaseUrl if provided, otherwise use current host
+      let wsUrl;
+      if (this.wsBaseUrl) {
+        wsUrl = `${this.wsBaseUrl}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
+      } else {
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        wsUrl = `${protocol}//${window.location.host}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
+      }
+      this.ws = new WebSocket(wsUrl);
       let resolved = false;
 
       this.ws.addEventListener('open', () => {
