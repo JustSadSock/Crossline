@@ -40,9 +40,13 @@ const state = {
 };
 
 // Helper functions to get current API configuration
-function getApiBaseUrl() {
+function getServerUrlFromInput() {
   const value = serverUrlInput?.value;
-  const serverUrl = typeof value === 'string' ? value.trim() : '';
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getApiBaseUrl() {
+  const serverUrl = getServerUrlFromInput();
   if (serverUrl) {
     return serverUrl.replace(/\/$/, ''); // Remove trailing slash
   }
@@ -53,8 +57,7 @@ function getApiBaseUrl() {
 }
 
 function getWsBaseUrl() {
-  const value = serverUrlInput?.value;
-  const serverUrl = typeof value === 'string' ? value.trim() : '';
+  const serverUrl = getServerUrlFromInput();
   if (serverUrl) {
     try {
       const url = new URL(serverUrl);
