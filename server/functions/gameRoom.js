@@ -11,14 +11,34 @@ const {
   SHIELD_RECHARGE_FACTOR,
   SHIELD_ARC,
   SHIELD_RADIUS,
+  SHIELD_REFLECTION_DRAIN,
   DASH_MAX_CHARGES,
   DASH_RECHARGE_MS,
   DASH_DISTANCE,
+  WEAPON_HEAT_PER_SHOT,
+  WEAPON_HEAT_COOLDOWN_RATE,
+  WEAPON_OVERHEAT_PENALTY_MS,
+  WEAPON_HEAT_SAFE_RATIO,
+  WEAPON_MIN_SHOT_INTERVAL,
 } = require('./constants');
 
 const TICK_RATE = 30;
 const MOVE_THROTTLE_MS = 16;
 const STEP_DELTA = 1000 / TICK_RATE;
+const MIN_SHOT_INTERVAL = WEAPON_MIN_SHOT_INTERVAL;
+
+function decayWeaponHeat(player) {
+  if (!player) return;
+  const heat = typeof player.weaponHeat === 'number' ? player.weaponHeat : 0;
+  player.weaponHeat = Math.max(0, heat - STEP_DELTA * WEAPON_HEAT_COOLDOWN_RATE);
+}
+
+function recoverWeaponHeat(player, now) {
+  if (!player || !player.weaponOverheated) return;
+  if (player.weaponHeat <= WEAPON_HEAT_SAFE_RATIO && now >= (player.weaponRecoveredAt || 0)) {
+    player.weaponOverheated = false;
+  }
+}
 
 class GameRoom {
   constructor({ id, name, maxPlayers = 8, persistent = false }) {
@@ -93,6 +113,10 @@ class GameRoom {
       dashCharge: DASH_MAX_CHARGES,
       lastMoveDirection: { x: 1, y: 0 },
       lastMoveMessageAt: 0,
+      weaponHeat: 0,
+      weaponOverheated: false,
+      weaponRecoveredAt: 0,
+      lastShotAt: 0,
     };
     this.clients.set(playerId, ws);
     this.lastActivity = Date.now();
@@ -145,7 +169,27 @@ class GameRoom {
       player.lastMoveMessageAt = now;
       this.lastActivity = now;
     } else if (message.type === 'shoot' && player.alive) {
+      if (player.shieldActive || player.shieldRequested) {
+        return;
+      }
+      if (player.weaponOverheated) {
+        return;
+      }
+      if (now - (player.lastShotAt || 0) < MIN_SHOT_INTERVAL) {
+        return;
+      }
+      if (player.weaponHeat >= 1) {
+        player.weaponOverheated = true;
+        player.weaponRecoveredAt = now + WEAPON_OVERHEAT_PENALTY_MS;
+        return;
+      }
       this.spawnBullet(playerId);
+      player.lastShotAt = now;
+      player.weaponHeat = Math.min(1, (player.weaponHeat || 0) + WEAPON_HEAT_PER_SHOT);
+      if (player.weaponHeat >= 1) {
+        player.weaponOverheated = true;
+        player.weaponRecoveredAt = now + WEAPON_OVERHEAT_PENALTY_MS;
+      }
       this.lastActivity = now;
     } else if (message.type === 'respawn' && !player.alive) {
       this.respawnPlayer(playerId);
@@ -203,6 +247,10 @@ class GameRoom {
     player.shieldRequested = false;
     player.dashCharge = DASH_MAX_CHARGES;
     player.lastMoveDirection = { x: 1, y: 0 };
+    player.weaponHeat = 0;
+    player.weaponOverheated = false;
+    player.weaponRecoveredAt = 0;
+    player.lastShotAt = Date.now() - MIN_SHOT_INTERVAL;
     this.lastActivity = Date.now();
   }
 
@@ -211,7 +259,11 @@ class GameRoom {
       return;
     }
 
+    const now = Date.now();
+
     Object.values(this.players).forEach((player) => {
+      decayWeaponHeat(player);
+      recoverWeaponHeat(player, now);
       if (!player.alive) {
         player.shieldActive = false;
         player.shieldRequested = false;
@@ -237,7 +289,6 @@ class GameRoom {
       );
     });
 
-    const now = Date.now();
     this.bullets = this.bullets.filter((bullet) => {
       bullet.x += Math.cos(bullet.angle) * BULLET_SPEED;
       bullet.y += Math.sin(bullet.angle) * BULLET_SPEED;
@@ -262,6 +313,12 @@ class GameRoom {
             const offset = SHIELD_RADIUS + 6;
             bullet.x = player.x + Math.cos(player.angle) * offset;
             bullet.y = player.y + Math.sin(player.angle) * offset;
+            const drain = SHIELD_MAX_CHARGE * SHIELD_REFLECTION_DRAIN;
+            player.shieldCharge = Math.max(0, player.shieldCharge - drain);
+            if (player.shieldCharge <= 0) {
+              player.shieldActive = false;
+              player.shieldRequested = false;
+            }
             return true;
           }
         }

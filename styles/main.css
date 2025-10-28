@@ -29,11 +29,14 @@ body {
   background: radial-gradient(circle at top left, rgba(77, 246, 255, 0.08), transparent 55%),
     radial-gradient(circle at bottom right, rgba(255, 44, 251, 0.12), transparent 60%),
     var(--bg-color);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  padding: 2.4rem 1.5rem;
+  gap: 2rem;
 }
 
 .background-grid {
@@ -225,6 +228,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  margin: 0 auto;
 }
 
 .lobby__header {
@@ -357,6 +361,7 @@ body {
   flex: 1;
   overflow-y: auto;
   padding-right: 0.3rem;
+  margin-bottom: 0.75rem;
 }
 
 .rooms-list::-webkit-scrollbar {
@@ -370,19 +375,27 @@ body {
 
 .room-card {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 0.45rem;
+  align-items: flex-start;
   padding: 1rem 1.2rem;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid transparent;
   transition: border var(--transition), transform var(--transition), background var(--transition);
+  cursor: pointer;
 }
 
-.room-card:hover {
+.room-card:hover,
+.room-card:focus-visible {
   transform: translateY(-2px);
   border-color: rgba(77, 246, 255, 0.35);
   background: rgba(77, 246, 255, 0.08);
+}
+
+.room-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(77, 246, 255, 0.4);
 }
 
 .room-card--selected {
@@ -401,6 +414,17 @@ body {
   margin: 0.3rem 0 0;
   color: var(--text-secondary);
   font-size: 0.85rem;
+}
+
+.panel__join {
+  width: 100%;
+  margin: 0.25rem 0 1.2rem;
+  white-space: normal;
+}
+
+.panel__join[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .mode-card {
@@ -929,6 +953,56 @@ body {
   }
 }
 
+@media (min-width: 960px) and (min-height: 820px) {
+  body {
+    justify-content: center;
+  }
+}
+
+@media (max-width: 540px) {
+  body {
+    padding: 1.4rem 0.85rem 2.2rem;
+  }
+  .lobby {
+    padding: 1.35rem;
+    border-radius: 24px;
+    gap: 1.4rem;
+  }
+  .lobby__header {
+    gap: 0.85rem;
+  }
+  .brand__title {
+    font-size: clamp(2.1rem, 8vw, 2.6rem);
+  }
+  .brand__subtitle {
+    font-size: 0.85rem;
+    letter-spacing: 0.08em;
+  }
+  .profile__input {
+    padding: 0.8rem 1rem;
+  }
+  .panel {
+    padding: 1.2rem;
+  }
+  .mode-card {
+    padding: 1.05rem 1.1rem;
+  }
+  .mode-card__controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .mode-card__controls select {
+    width: 100%;
+  }
+  .rooms-list {
+    max-height: 320px;
+  }
+  .lobby__info-btn {
+    width: 100%;
+    align-self: stretch;
+  }
+}
+
 @media (max-width: 1100px) {
   .lobby {
     padding: 1.9rem;
@@ -961,11 +1035,16 @@ body {
 }
 
 @media (max-width: 768px) {
+  body {
+    padding: 1.8rem 1rem 2.4rem;
+    align-items: stretch;
+  }
   .lobby {
-    width: min(96vw, 520px);
+    width: min(96vw, 540px);
     padding: 1.6rem;
-    max-height: calc(100vh - 3rem);
+    max-height: none;
     margin: 0 auto;
+    overflow: visible;
   }
   .lobby__header {
     flex-direction: column;

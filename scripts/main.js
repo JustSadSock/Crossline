@@ -57,6 +57,7 @@ const inputState = {
 const state = {
   selectedRoomId: null,
   selectedRoomElement: null,
+  selectedRoomName: '',
   currentGame: null,
   currentMode: null,
 };
@@ -74,10 +75,41 @@ const MOVEMENT_KEY_MAP = {
   ArrowRight: 'd',
 };
 
+const SHIELD_UI_FULL_A = { r: 77, g: 246, b: 255 };
+const SHIELD_UI_FULL_B = { r: 255, g: 44, b: 251 };
+const SHIELD_UI_DRAINED_A = { r: 48, g: 104, b: 132 };
+const SHIELD_UI_DRAINED_B = { r: 120, g: 76, b: 126 };
+
+function mixChannel(a, b, t) {
+  return Math.round(a + (b - a) * t);
+}
+
+function mixColor(colorA, colorB, t) {
+  return {
+    r: mixChannel(colorA.r, colorB.r, t),
+    g: mixChannel(colorA.g, colorB.g, t),
+    b: mixChannel(colorA.b, colorB.b, t),
+  };
+}
+
+function colorToCss({ r, g, b }) {
+  const toHex = (value) => value.toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function getShieldUiGradient(ratio) {
+  const t = Math.min(1, Math.max(0, 1 - ratio));
+  const start = mixColor(SHIELD_UI_FULL_A, SHIELD_UI_DRAINED_A, t);
+  const end = mixColor(SHIELD_UI_FULL_B, SHIELD_UI_DRAINED_B, t);
+  return { start: colorToCss(start), end: colorToCss(end) };
+}
+
 function updateShieldUi(ratio, active) {
   if (!shieldFill || !shieldValue) return;
   const clamped = Math.max(0, Math.min(1, ratio));
+  const gradient = getShieldUiGradient(clamped);
   shieldFill.style.width = `${(clamped * 100).toFixed(1)}%`;
+  shieldFill.style.background = `linear-gradient(120deg, ${gradient.start}, ${gradient.end})`;
   if (active) {
     shieldFill.dataset.state = 'active';
   } else if (clamped < 1) {
@@ -86,6 +118,7 @@ function updateShieldUi(ratio, active) {
     delete shieldFill.dataset.state;
   }
   shieldValue.textContent = `${Math.round(clamped * 100)}%`;
+  shieldValue.style.color = gradient.end;
 }
 
 function updateDashUi(value) {
@@ -374,11 +407,25 @@ function centerPointer() {
   inputState.aimVector.active = false;
 }
 
+function setPointerFromClientPosition(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = rect.width ? canvas.width / rect.width : 1;
+  const scaleY = rect.height ? canvas.height / rect.height : 1;
+  const x = (clientX - rect.left) * scaleX;
+  const y = (clientY - rect.top) * scaleY;
+  inputState.pointer.x = Math.max(0, Math.min(canvas.width, x));
+  inputState.pointer.y = Math.max(0, Math.min(canvas.height, y));
+}
+
 async function loadRooms() {
   roomsList.innerHTML = '<p class="room-card__meta">Загрузка комнат…</p>';
+  if (state.selectedRoomElement) {
+    state.selectedRoomElement.classList.remove('room-card--selected');
+    state.selectedRoomElement = null;
+  }
   playOnlineBtn.disabled = true;
-  state.selectedRoomId = null;
-  state.selectedRoomElement = null;
+  const previousRoomId = state.selectedRoomId;
+  const previousRoomName = state.selectedRoomName;
   const baseUrl = getApiBaseUrl();
   if (!baseUrl) {
     roomsList.innerHTML = '';
@@ -386,6 +433,7 @@ async function loadRooms() {
     hint.className = 'room-card__meta';
     hint.textContent = 'Сервер недоступен. Попробуйте позже.';
     roomsList.append(hint);
+    clearSelectedRoom();
     const now = Date.now();
     if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
       notifier.warning('Онлайн-сервер сейчас недоступен. Проверьте туннель и попробуйте снова.', {
@@ -407,24 +455,50 @@ async function loadRooms() {
       empty.className = 'room-card__meta';
       empty.textContent = 'Комнат пока нет. Создайте свою!';
       roomsList.append(empty);
+      clearSelectedRoom();
       return;
     }
+    let restored = false;
     rooms.forEach((room) => {
       const node = roomTemplate.content.firstElementChild.cloneNode(true);
+      node.dataset.roomId = room.id;
+      node.setAttribute('role', 'button');
+      node.setAttribute('aria-pressed', 'false');
+      node.tabIndex = 0;
       const title = node.querySelector('.room-card__title');
       const meta = node.querySelector('.room-card__meta');
-      const joinBtn = node.querySelector('.room-card__join');
-      title.textContent = room.name;
-      meta.textContent = `${room.players}/${room.maxPlayers} • ${room.status}`;
-      joinBtn.addEventListener('click', () => {
-        selectRoom(room.id, node);
+      const displayName =
+        typeof room.name === 'string' && room.name.trim() ? room.name.trim() : room.id;
+      if (title) {
+        title.textContent = displayName;
+      }
+      if (meta) {
+        meta.textContent = `${room.players}/${room.maxPlayers} • ${room.status}`;
+      }
+      node.addEventListener('click', () => {
+        selectRoom(room.id, node, displayName);
       });
-      node.addEventListener('click', (event) => {
-        if (event.target === joinBtn) return;
-        selectRoom(room.id, node);
+      node.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectRoom(room.id, node, displayName);
+        }
       });
+      if (room.id === previousRoomId) {
+        restored = true;
+        state.selectedRoomElement = node;
+        state.selectedRoomId = room.id;
+        state.selectedRoomName = previousRoomName || displayName;
+        node.classList.add('room-card--selected');
+        node.setAttribute('aria-pressed', 'true');
+      }
       roomsList.append(node);
     });
+    if (restored) {
+      updateJoinButton();
+    } else {
+      clearSelectedRoom();
+    }
   } catch (error) {
     console.error('Failed to load rooms', error);
     roomsList.innerHTML = '';
@@ -432,6 +506,7 @@ async function loadRooms() {
     fail.className = 'room-card__meta';
     fail.textContent = 'Не удалось получить список комнат.';
     roomsList.append(fail);
+    clearSelectedRoom();
     const now = Date.now();
     if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
       notifier.error('Не удалось получить список комнат. Проверьте сервер или туннель.', { timeout: 6000 });
@@ -440,14 +515,48 @@ async function loadRooms() {
   }
 }
 
-function selectRoom(roomId, element) {
-  state.selectedRoomId = roomId;
-  playOnlineBtn.disabled = false;
+function clearSelectedRoom() {
   if (state.selectedRoomElement) {
     state.selectedRoomElement.classList.remove('room-card--selected');
+    state.selectedRoomElement.setAttribute('aria-pressed', 'false');
   }
+  state.selectedRoomElement = null;
+  state.selectedRoomId = null;
+  state.selectedRoomName = '';
+  updateJoinButton();
+}
+
+function selectRoom(roomId, element, roomName = '') {
+  if (state.selectedRoomElement && state.selectedRoomElement !== element) {
+    state.selectedRoomElement.classList.remove('room-card--selected');
+    state.selectedRoomElement.setAttribute('aria-pressed', 'false');
+  }
+  state.selectedRoomId = roomId;
+  state.selectedRoomName = roomName;
   state.selectedRoomElement = element;
-  element.classList.add('room-card--selected');
+  if (element) {
+    element.classList.add('room-card--selected');
+    element.setAttribute('aria-pressed', 'true');
+  }
+  updateJoinButton();
+}
+
+function updateJoinButton() {
+  if (!playOnlineBtn) return;
+  if (state.selectedRoomId) {
+    playOnlineBtn.disabled = false;
+    const label = state.selectedRoomName
+      ? `Присоединиться к «${state.selectedRoomName}»`
+      : 'Присоединиться';
+    playOnlineBtn.textContent = label;
+    playOnlineBtn.title = label;
+    playOnlineBtn.dataset.state = 'active';
+  } else {
+    playOnlineBtn.disabled = true;
+    playOnlineBtn.textContent = 'Присоединиться';
+    playOnlineBtn.dataset.state = 'idle';
+    playOnlineBtn.title = 'Выберите комнату, чтобы подключиться';
+  }
 }
 
 async function handleCreateRoom(event) {
@@ -476,7 +585,8 @@ async function handleCreateRoom(event) {
       return title && title.textContent === room.name;
     });
     if (created) {
-      selectRoom(room.id, created);
+      const displayName = typeof room.name === 'string' && room.name.trim() ? room.name.trim() : room.id;
+      selectRoom(room.id, created, displayName);
       created.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
     notifier.success(`Комната «${room.name}» готова к старту.`, { timeout: 5000 });
@@ -572,6 +682,7 @@ function attachInputListeners() {
         event.preventDefault();
       }
       inputState.shield = true;
+      inputState.fire = false;
     }
   });
   document.addEventListener('keyup', (event) => {
@@ -594,9 +705,7 @@ function attachInputListeners() {
     }
   });
   canvas.addEventListener('mousemove', (event) => {
-    const rect = canvas.getBoundingClientRect();
-    inputState.pointer.x = event.clientX - rect.left;
-    inputState.pointer.y = event.clientY - rect.top;
+    setPointerFromClientPosition(event.clientX, event.clientY);
   });
   canvas.addEventListener('contextmenu', (event) => {
     event.preventDefault();
@@ -604,8 +713,11 @@ function attachInputListeners() {
   canvas.addEventListener('mousedown', (event) => {
     if (event.button === 2) {
       inputState.shield = true;
+      inputState.fire = false;
     } else if (event.button === 0) {
-      inputState.fire = true;
+      if (!inputState.shield) {
+        inputState.fire = true;
+      }
     }
   });
   document.addEventListener('mouseup', (event) => {
@@ -621,19 +733,17 @@ function attachInputListeners() {
       event.preventDefault();
     }
     const touch = event.changedTouches[0];
-    const rect = canvas.getBoundingClientRect();
-    inputState.pointer.x = touch.clientX - rect.left;
-    inputState.pointer.y = touch.clientY - rect.top;
-    inputState.fire = true;
+    setPointerFromClientPosition(touch.clientX, touch.clientY);
+    if (!inputState.shield) {
+      inputState.fire = true;
+    }
   }, { passive: false });
   canvas.addEventListener('touchmove', (event) => {
     if (event.cancelable) {
       event.preventDefault();
     }
     const touch = event.changedTouches[0];
-    const rect = canvas.getBoundingClientRect();
-    inputState.pointer.x = touch.clientX - rect.left;
-    inputState.pointer.y = touch.clientY - rect.top;
+    setPointerFromClientPosition(touch.clientX, touch.clientY);
   }, { passive: false });
   canvas.addEventListener('touchend', (event) => {
     if (event.cancelable) {
@@ -748,6 +858,7 @@ function attachMobileControls() {
 
   bindButton(mobileShield, () => {
     inputState.shield = true;
+    inputState.fire = false;
   }, () => {
     inputState.shield = false;
   });
@@ -850,8 +961,8 @@ async function startOnlineGame() {
   state.currentGame = game;
   try {
     await game.start({ roomId: state.selectedRoomId, playerName: name });
-    ui.setMode('online', state.selectedRoomId);
-    const roomTitle = state.selectedRoomElement?.querySelector('.room-card__title')?.textContent?.trim();
+    ui.setMode('online', state.selectedRoomName || state.selectedRoomId);
+    const roomTitle = state.selectedRoomName || state.selectedRoomElement?.querySelector('.room-card__title')?.textContent?.trim();
     notifier.success(`Вы подключены к комнате ${roomTitle ? `«${roomTitle}»` : state.selectedRoomId}.`, { timeout: 5200 });
   } catch (error) {
     console.error('Online game failed', error);
@@ -924,6 +1035,7 @@ function init() {
       }
     });
   }
+  updateJoinButton();
   loadRooms();
 }
 
