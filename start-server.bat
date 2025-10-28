@@ -5,10 +5,30 @@ rem ===== Crossline: zero-input launcher (server + ngrok + deps) =====
 cd /d "%~dp0"
 
 rem -------- Settings (edit once if you want) --------
-if not defined PORT set "PORT=80"
+if not defined PORT set "PORT=3000"
 if not defined NGROK_EXE set "NGROK_EXE=ngrok"
 if not defined NGROK_AUTHTOKEN set "NGROK_AUTHTOKEN=316t6ozoUFVJPzOC0KV01Ln93M5_ARhwXXj9eAtjqAwEDNtz"
 rem (you can override NGROK_AUTHTOKEN/PORT via environment before launching)
+
+rem Normalize the requested port and guard against privileged bindings without admin rights
+set "REQUESTED_PORT=%PORT%"
+for /f "delims=." %%P in ("%PORT%") do set "PORT=%%P"
+set /a PORT_NUM=%PORT% 2>nul
+if errorlevel 1 set "PORT_NUM=0"
+if %PORT_NUM% LSS 1 set "PORT=3000" & set "PORT_NUM=3000"
+
+if %PORT_NUM% LSS 1024 if %PORT_NUM% GTR 0 (
+  net session >nul 2>&1
+  if errorlevel 1 (
+    echo [WARN] Port %REQUESTED_PORT% requires administrator rights. Falling back to 3000.
+    set "PORT=3000"
+    set "PORT_NUM=3000"
+  )
+)
+
+if /i not "%REQUESTED_PORT%"=="%PORT%" (
+  echo [INFO] Using port %PORT% (requested %REQUESTED_PORT%).
+)
 
 rem -------- Check Node --------
 where node >nul 2>&1
