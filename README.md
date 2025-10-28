@@ -83,6 +83,32 @@ For development with auto-reload:
 npm run dev
 ```
 
+### Deploying to Static Hosts (Netlify, GitHub Pages, etc.)
+
+If you want to deploy the frontend to a static hosting service while running the server separately:
+
+1. **Start the server locally or on a cloud provider**:
+   ```bash
+   npm start
+   ```
+
+2. **Create a public tunnel with ngrok** (for local servers):
+   ```bash
+   ngrok http 3000
+   ```
+   Note the public URL (e.g., `https://abc123.ngrok.io`)
+
+3. **Configure the frontend**:
+   - Open the deployed site (e.g., `https://your-site.netlify.app`)
+   - In the "URL Сервера" (Server URL) field, enter your ngrok or cloud server URL
+   - The URL will be saved automatically in your browser
+
+4. **Alternative: Set via JavaScript**:
+   Before the page loads, you can set the server URL in the browser console or via a script:
+   ```javascript
+   window.CROSSLINE_API_URL = 'https://your-server-url.ngrok.io';
+   ```
+
 ## How to Play
 
 ### Controls

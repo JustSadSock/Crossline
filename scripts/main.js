@@ -11,6 +11,7 @@ const playOnlineBtn = document.getElementById('play-online');
 const playOfflineBtn = document.getElementById('play-offline');
 const difficultySelect = document.getElementById('offline-difficulty');
 const playerNameInput = document.getElementById('player-name');
+const serverUrlInput = document.getElementById('server-url');
 const canvas = document.getElementById('game-canvas');
 const modeLabel = document.getElementById('mode-label');
 const statusText = document.getElementById('status-text');
@@ -37,6 +38,32 @@ const state = {
   currentGame: null,
   currentMode: null,
 };
+
+// Helper functions to get current API configuration
+function getApiBaseUrl() {
+  const serverUrl = serverUrlInput?.value?.trim();
+  if (serverUrl) {
+    return serverUrl.replace(/\/$/, ''); // Remove trailing slash
+  }
+  if (window.CROSSLINE_API_URL) {
+    return window.CROSSLINE_API_URL;
+  }
+  return window.location.origin;
+}
+
+function getWsBaseUrl() {
+  const serverUrl = serverUrlInput?.value?.trim();
+  if (serverUrl) {
+    const url = new URL(serverUrl);
+    const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${url.host}`;
+  }
+  if (window.CROSSLINE_WS_URL) {
+    return window.CROSSLINE_WS_URL;
+  }
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}`;
+}
 
 const notifier = createNotifier(notificationsRoot);
 const ROOMS_ERROR_COOLDOWN = 4000;
@@ -235,7 +262,7 @@ async function loadRooms() {
   state.selectedRoomId = null;
   state.selectedRoomElement = null;
   try {
-    const response = await fetch('/rooms', { cache: 'no-store' });
+    const response = await fetch(`${getApiBaseUrl()}/rooms`, { cache: 'no-store' });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -293,7 +320,7 @@ async function handleCreateRoom(event) {
   event.preventDefault();
   const name = roomNameInput.value.trim();
   try {
-    const response = await fetch('/rooms', {
+    const response = await fetch(`${getApiBaseUrl()}/rooms`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -430,7 +457,7 @@ async function startOnlineGame() {
   ui.reset();
   state.currentMode = 'online';
   const name = sanitizeName(playerNameInput.value || '');
-  const game = new OnlineGame({ canvas, inputState, ui });
+  const game = new OnlineGame({ canvas, inputState, ui, wsBaseUrl: getWsBaseUrl() });
   state.currentGame = game;
   try {
     await game.start({ roomId: state.selectedRoomId, playerName: name });
@@ -475,6 +502,24 @@ function returnToLobby() {
 }
 
 function init() {
+  // Load saved server URL from localStorage
+  const savedServerUrl = localStorage.getItem('crossline_server_url');
+  if (savedServerUrl && serverUrlInput) {
+    serverUrlInput.value = savedServerUrl;
+  }
+  
+  // Save server URL to localStorage when it changes
+  if (serverUrlInput) {
+    serverUrlInput.addEventListener('input', () => {
+      const url = serverUrlInput.value.trim();
+      if (url) {
+        localStorage.setItem('crossline_server_url', url);
+      } else {
+        localStorage.removeItem('crossline_server_url');
+      }
+    });
+  }
+  
   attachInputListeners();
   attachMobileControls();
   refreshRoomsBtn.addEventListener('click', loadRooms);
