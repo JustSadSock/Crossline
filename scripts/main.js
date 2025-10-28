@@ -11,7 +11,6 @@ const playOnlineBtn = document.getElementById('play-online');
 const playOfflineBtn = document.getElementById('play-offline');
 const difficultySelect = document.getElementById('offline-difficulty');
 const playerNameInput = document.getElementById('player-name');
-const serverUrlInput = document.getElementById('server-url');
 const canvas = document.getElementById('game-canvas');
 const modeLabel = document.getElementById('mode-label');
 const statusText = document.getElementById('status-text');
@@ -86,17 +85,7 @@ function httpToWs(baseUrl) {
   }
 }
 
-// Helper functions to get current API configuration
-function getServerUrlFromInput() {
-  const value = serverUrlInput?.value;
-  return typeof value === 'string' ? value.trim() : '';
-}
-
 function getApiBaseUrl() {
-  const serverUrl = normalizeHttpUrl(getServerUrlFromInput());
-  if (serverUrl) {
-    return serverUrl;
-  }
   const globalUrl = normalizeHttpUrl(window.CROSSLINE_API_URL);
   if (globalUrl) {
     return globalUrl;
@@ -108,10 +97,6 @@ function getApiBaseUrl() {
 }
 
 function getWsBaseUrl() {
-  const serverUrl = normalizeHttpUrl(getServerUrlFromInput());
-  if (serverUrl) {
-    return httpToWs(serverUrl);
-  }
   if (window.CROSSLINE_WS_URL) {
     return window.CROSSLINE_WS_URL;
   }
@@ -323,11 +308,13 @@ async function loadRooms() {
     roomsList.innerHTML = '';
     const hint = document.createElement('p');
     hint.className = 'room-card__meta';
-    hint.textContent = 'Укажите URL сервера выше, чтобы увидеть комнаты.';
+    hint.textContent = 'Сервер недоступен. Попробуйте позже.';
     roomsList.append(hint);
     const now = Date.now();
     if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
-      notifier.warning('Укажите адрес туннеля сервера, чтобы подключиться к онлайн-режиму.', { timeout: 6500 });
+      notifier.warning('Онлайн-сервер сейчас недоступен. Проверьте туннель и попробуйте снова.', {
+        timeout: 6500,
+      });
       lastRoomsErrorAt = now;
     }
     return;
@@ -393,7 +380,7 @@ async function handleCreateRoom(event) {
   try {
     const baseUrl = getApiBaseUrl();
     if (!baseUrl) {
-      notifier.warning('Сначала укажите URL сервера, чтобы создать комнату.');
+      notifier.warning('Сервер недоступен. Попробуйте позже.');
       return;
     }
     const response = await fetch(`${baseUrl}/rooms`, {
@@ -583,24 +570,6 @@ function returnToLobby() {
 }
 
 function init() {
-  // Load saved server URL from localStorage
-  const savedServerUrl = localStorage.getItem('crossline_server_url');
-  if (savedServerUrl && serverUrlInput) {
-    serverUrlInput.value = savedServerUrl;
-  }
-  
-  // Save server URL to localStorage when it changes
-  if (serverUrlInput) {
-    serverUrlInput.addEventListener('input', () => {
-      const url = serverUrlInput.value.trim();
-      if (url) {
-        localStorage.setItem('crossline_server_url', url);
-      } else {
-        localStorage.removeItem('crossline_server_url');
-      }
-    });
-  }
-  
   attachInputListeners();
   attachMobileControls();
   refreshRoomsBtn.addEventListener('click', loadRooms);
