@@ -39,6 +39,53 @@ const state = {
   currentMode: null,
 };
 
+const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '::1'];
+
+function isLocalEnvironment() {
+  const { hostname } = window.location;
+  if (!hostname) {
+    return false;
+  }
+  return (
+    LOCAL_HOSTNAMES.includes(hostname) ||
+    hostname.endsWith('.local') ||
+    hostname.startsWith('127.') ||
+    hostname.startsWith('192.168.') ||
+    hostname.startsWith('10.')
+  );
+}
+
+function normalizeHttpUrl(rawUrl) {
+  const value = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+  if (!value) {
+    return '';
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+    parsed.hash = '';
+    const cleanedPath = parsed.pathname.replace(/\/+$/, '');
+    const path = cleanedPath && cleanedPath !== '/' ? cleanedPath : '';
+    return `${parsed.origin}${path}`;
+  } catch (error) {
+    console.warn('Invalid server URL provided, ignoring', error);
+    return '';
+  }
+}
+
+function httpToWs(baseUrl) {
+  try {
+    const parsed = new URL(baseUrl);
+    const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${parsed.host}`;
+  } catch (error) {
+    console.warn('Unable to derive WebSocket URL from base', error);
+    return '';
+  }
+}
+
 // Helper functions to get current API configuration
 function getServerUrlFromInput() {
   const value = serverUrlInput?.value;
@@ -46,33 +93,33 @@ function getServerUrlFromInput() {
 }
 
 function getApiBaseUrl() {
-  const serverUrl = getServerUrlFromInput();
+  const serverUrl = normalizeHttpUrl(getServerUrlFromInput());
   if (serverUrl) {
-    return serverUrl.replace(/\/$/, ''); // Remove trailing slash
+    return serverUrl;
   }
-  if (window.CROSSLINE_API_URL) {
-    return window.CROSSLINE_API_URL;
+  const globalUrl = normalizeHttpUrl(window.CROSSLINE_API_URL);
+  if (globalUrl) {
+    return globalUrl;
   }
-  return window.location.origin;
+  if (isLocalEnvironment()) {
+    return window.location.origin;
+  }
+  return '';
 }
 
 function getWsBaseUrl() {
-  const serverUrl = getServerUrlFromInput();
+  const serverUrl = normalizeHttpUrl(getServerUrlFromInput());
   if (serverUrl) {
-    try {
-      const url = new URL(serverUrl);
-      const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      return `${protocol}//${url.host}`;
-    } catch (error) {
-      console.warn('Invalid server URL, falling back to current host:', error);
-      // Fall through to default behavior
-    }
+    return httpToWs(serverUrl);
   }
   if (window.CROSSLINE_WS_URL) {
     return window.CROSSLINE_WS_URL;
   }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}`;
+  if (isLocalEnvironment()) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}`;
+  }
+  return '';
 }
 
 const notifier = createNotifier(notificationsRoot);
@@ -271,8 +318,22 @@ async function loadRooms() {
   playOnlineBtn.disabled = true;
   state.selectedRoomId = null;
   state.selectedRoomElement = null;
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
+    roomsList.innerHTML = '';
+    const hint = document.createElement('p');
+    hint.className = 'room-card__meta';
+    hint.textContent = 'Укажите URL сервера выше, чтобы увидеть комнаты.';
+    roomsList.append(hint);
+    const now = Date.now();
+    if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
+      notifier.warning('Укажите адрес туннеля сервера, чтобы подключиться к онлайн-режиму.', { timeout: 6500 });
+      lastRoomsErrorAt = now;
+    }
+    return;
+  }
   try {
-    const response = await fetch(`${getApiBaseUrl()}/rooms`, { cache: 'no-store' });
+    const response = await fetch(`${baseUrl}/rooms`, { cache: 'no-store' });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -330,7 +391,12 @@ async function handleCreateRoom(event) {
   event.preventDefault();
   const name = roomNameInput.value.trim();
   try {
-    const response = await fetch(`${getApiBaseUrl()}/rooms`, {
+    const baseUrl = getApiBaseUrl();
+    if (!baseUrl) {
+      notifier.warning('Сначала укажите URL сервера, чтобы создать комнату.');
+      return;
+    }
+    const response = await fetch(`${baseUrl}/rooms`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -462,12 +528,17 @@ async function startOnlineGame() {
     notifier.warning('Сначала выберите комнату или создайте новую арену.');
     return;
   }
+  const wsBaseUrl = getWsBaseUrl();
+  if (!wsBaseUrl) {
+    notifier.warning('Укажите URL туннеля сервера, чтобы подключиться.');
+    return;
+  }
   stopCurrentGame();
   toggleView(true);
   ui.reset();
   state.currentMode = 'online';
   const name = sanitizeName(playerNameInput.value || '');
-  const game = new OnlineGame({ canvas, inputState, ui, wsBaseUrl: getWsBaseUrl() });
+  const game = new OnlineGame({ canvas, inputState, ui, wsBaseUrl });
   state.currentGame = game;
   try {
     await game.start({ roomId: state.selectedRoomId, playerName: name });
