@@ -41,7 +41,7 @@ const state = {
 
 // Helper functions to get current API configuration
 function getApiBaseUrl() {
-  const serverUrl = serverUrlInput?.value?.trim();
+  const serverUrl = serverUrlInput?.value?.trim?.();
   if (serverUrl) {
     return serverUrl.replace(/\/$/, ''); // Remove trailing slash
   }
@@ -52,11 +52,16 @@ function getApiBaseUrl() {
 }
 
 function getWsBaseUrl() {
-  const serverUrl = serverUrlInput?.value?.trim();
+  const serverUrl = serverUrlInput?.value?.trim?.();
   if (serverUrl) {
-    const url = new URL(serverUrl);
-    const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${url.host}`;
+    try {
+      const url = new URL(serverUrl);
+      const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${url.host}`;
+    } catch (error) {
+      console.warn('Invalid server URL, falling back to current host:', error);
+      // Fall through to default behavior
+    }
   }
   if (window.CROSSLINE_WS_URL) {
     return window.CROSSLINE_WS_URL;
