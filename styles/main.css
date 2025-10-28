@@ -361,6 +361,7 @@ body {
   flex: 1;
   overflow-y: auto;
   padding-right: 0.3rem;
+  margin-bottom: 0.75rem;
 }
 
 .rooms-list::-webkit-scrollbar {
@@ -374,19 +375,27 @@ body {
 
 .room-card {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 0.45rem;
+  align-items: flex-start;
   padding: 1rem 1.2rem;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid transparent;
   transition: border var(--transition), transform var(--transition), background var(--transition);
+  cursor: pointer;
 }
 
-.room-card:hover {
+.room-card:hover,
+.room-card:focus-visible {
   transform: translateY(-2px);
   border-color: rgba(77, 246, 255, 0.35);
   background: rgba(77, 246, 255, 0.08);
+}
+
+.room-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(77, 246, 255, 0.4);
 }
 
 .room-card--selected {
@@ -405,6 +414,17 @@ body {
   margin: 0.3rem 0 0;
   color: var(--text-secondary);
   font-size: 0.85rem;
+}
+
+.panel__join {
+  width: 100%;
+  margin: 0.25rem 0 1.2rem;
+  white-space: normal;
+}
+
+.panel__join[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .mode-card {

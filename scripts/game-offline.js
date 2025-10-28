@@ -13,6 +13,11 @@ const SHIELD_REFLECTION_DRAIN = 0.1;
 const DASH_MAX_CHARGES = 3;
 const DASH_RECHARGE_MS = 5000;
 const DASH_DISTANCE = 136;
+const SHOT_COOLDOWN = 220;
+const WEAPON_HEAT_PER_SHOT = 0.28;
+const WEAPON_HEAT_COOLDOWN_RATE = 0.0005;
+const WEAPON_OVERHEAT_PENALTY_MS = 1200;
+const WEAPON_HEAT_SAFE_RATIO = 0.45;
 
 const BOT_DIFFICULTY = {
   easy: { speed: 2.6, fireRate: 650, accuracy: 0.6 },
@@ -55,6 +60,29 @@ function normalizeAngle(angle) {
   while (value > Math.PI) value -= Math.PI * 2;
   while (value < -Math.PI) value += Math.PI * 2;
   return value;
+}
+
+function decayWeaponHeat(entity, delta) {
+  if (!entity) return;
+  const heat = typeof entity.weaponHeat === 'number' ? entity.weaponHeat : 0;
+  entity.weaponHeat = Math.max(0, heat - delta * WEAPON_HEAT_COOLDOWN_RATE);
+}
+
+function recoverWeaponOverheat(entity, now) {
+  if (!entity || !entity.weaponOverheated) {
+    return false;
+  }
+  if (entity.weaponHeat <= WEAPON_HEAT_SAFE_RATIO && now >= (entity.weaponRecoveredAt || 0)) {
+    entity.weaponOverheated = false;
+    return true;
+  }
+  return false;
+}
+
+function markWeaponOverheated(entity, now) {
+  if (!entity) return;
+  entity.weaponOverheated = true;
+  entity.weaponRecoveredAt = now + WEAPON_OVERHEAT_PENALTY_MS;
 }
 
 export class OfflineGame {
@@ -116,6 +144,9 @@ export class OfflineGame {
         shieldActive: false,
         dashCharge: DASH_MAX_CHARGES,
         lastMoveDirection: { x: 1, y: 0 },
+        weaponHeat: 0,
+        weaponOverheated: false,
+        weaponRecoveredAt: 0,
       },
       bot: {
         id: 'bot',
@@ -130,6 +161,9 @@ export class OfflineGame {
         shieldActive: false,
         dashCharge: DASH_MAX_CHARGES,
         lastMoveDirection: { x: -1, y: 0 },
+        weaponHeat: 0,
+        weaponOverheated: false,
+        weaponRecoveredAt: 0,
       },
     };
     this.bullets = [];
@@ -154,6 +188,9 @@ export class OfflineGame {
     player.shieldActive = false;
     player.dashCharge = DASH_MAX_CHARGES;
     player.lastMoveDirection = { x: 1, y: 0 };
+    player.weaponHeat = 0;
+    player.weaponOverheated = false;
+    player.weaponRecoveredAt = 0;
   }
 
   spawnBot(bot) {
@@ -165,6 +202,9 @@ export class OfflineGame {
     bot.shieldCharge = SHIELD_MAX_CHARGE;
     bot.dashCharge = DASH_MAX_CHARGES;
     bot.lastMoveDirection = { x: -1, y: 0 };
+    bot.weaponHeat = 0;
+    bot.weaponOverheated = false;
+    bot.weaponRecoveredAt = 0;
   }
 
   recordDashTrail(fromX, fromY, toX, toY) {
@@ -198,7 +238,7 @@ export class OfflineGame {
       player.shieldActive = false;
     }
     if (bot.alive) {
-      this.updateBot(bot, player);
+      this.updateBot(bot, player, delta);
     }
 
     this.updateBullets();
@@ -261,15 +301,29 @@ export class OfflineGame {
     }
 
     const now = performance.now();
-    if (
+    const wasOverheated = player.weaponOverheated;
+    decayWeaponHeat(player, delta);
+    if (recoverWeaponOverheat(player, now) && wasOverheated) {
+      this.ui.setStatus('Оружие остыло', 'success');
+    }
+
+    const canShoot =
       this.input.fire &&
       !player.shieldActive &&
       !this.input.shield &&
-      now - this.lastShotAt > 220 &&
-      player.alive
-    ) {
+      now - this.lastShotAt > SHOT_COOLDOWN &&
+      player.alive &&
+      !player.weaponOverheated &&
+      player.weaponHeat < 1;
+
+    if (canShoot) {
       this.spawnBullet(player);
       this.lastShotAt = now;
+      player.weaponHeat = Math.min(1, player.weaponHeat + WEAPON_HEAT_PER_SHOT);
+      if (player.weaponHeat >= 1) {
+        markWeaponOverheated(player, now);
+        this.ui.setStatus('Оружие перегрелось', 'warning');
+      }
     }
 
     const dashRequested = this.input.consumeDashRequest();
@@ -295,7 +349,7 @@ export class OfflineGame {
     );
   }
 
-  updateBot(bot, player) {
+  updateBot(bot, player, delta) {
     const settings = this.settings;
     const dx = player.x - bot.x;
     const dy = player.y - bot.y;
@@ -323,9 +377,20 @@ export class OfflineGame {
     bot.angle = Math.atan2(aimY - bot.y, aimX - bot.x);
 
     const now = performance.now();
-    if (now - this.botShotAt > settings.fireRate && Math.random() < settings.accuracy) {
+    decayWeaponHeat(bot, delta);
+    recoverWeaponOverheat(bot, now);
+    const canShoot =
+      !bot.weaponOverheated &&
+      bot.weaponHeat < 1 &&
+      now - this.botShotAt > settings.fireRate &&
+      Math.random() < settings.accuracy;
+    if (canShoot) {
       this.spawnBullet(bot, settings.accuracy);
       this.botShotAt = now;
+      bot.weaponHeat = Math.min(1, bot.weaponHeat + WEAPON_HEAT_PER_SHOT * 0.9);
+      if (bot.weaponHeat >= 1) {
+        markWeaponOverheated(bot, now);
+      }
     }
   }
 
@@ -382,6 +447,9 @@ export class OfflineGame {
           if (target.health <= 0) {
             target.health = 0;
             target.alive = false;
+            target.weaponHeat = 0;
+            target.weaponOverheated = false;
+            target.weaponRecoveredAt = 0;
             this.players[bullet.owner].score += 1;
             if (targetId === 'player') {
               this.ui.toggleRespawn(true);

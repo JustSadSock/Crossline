@@ -57,6 +57,7 @@ const inputState = {
 const state = {
   selectedRoomId: null,
   selectedRoomElement: null,
+  selectedRoomName: '',
   currentGame: null,
   currentMode: null,
 };
@@ -418,9 +419,13 @@ function setPointerFromClientPosition(clientX, clientY) {
 
 async function loadRooms() {
   roomsList.innerHTML = '<p class="room-card__meta">Загрузка комнат…</p>';
+  if (state.selectedRoomElement) {
+    state.selectedRoomElement.classList.remove('room-card--selected');
+    state.selectedRoomElement = null;
+  }
   playOnlineBtn.disabled = true;
-  state.selectedRoomId = null;
-  state.selectedRoomElement = null;
+  const previousRoomId = state.selectedRoomId;
+  const previousRoomName = state.selectedRoomName;
   const baseUrl = getApiBaseUrl();
   if (!baseUrl) {
     roomsList.innerHTML = '';
@@ -428,6 +433,7 @@ async function loadRooms() {
     hint.className = 'room-card__meta';
     hint.textContent = 'Сервер недоступен. Попробуйте позже.';
     roomsList.append(hint);
+    clearSelectedRoom();
     const now = Date.now();
     if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
       notifier.warning('Онлайн-сервер сейчас недоступен. Проверьте туннель и попробуйте снова.', {
@@ -449,24 +455,50 @@ async function loadRooms() {
       empty.className = 'room-card__meta';
       empty.textContent = 'Комнат пока нет. Создайте свою!';
       roomsList.append(empty);
+      clearSelectedRoom();
       return;
     }
+    let restored = false;
     rooms.forEach((room) => {
       const node = roomTemplate.content.firstElementChild.cloneNode(true);
+      node.dataset.roomId = room.id;
+      node.setAttribute('role', 'button');
+      node.setAttribute('aria-pressed', 'false');
+      node.tabIndex = 0;
       const title = node.querySelector('.room-card__title');
       const meta = node.querySelector('.room-card__meta');
-      const joinBtn = node.querySelector('.room-card__join');
-      title.textContent = room.name;
-      meta.textContent = `${room.players}/${room.maxPlayers} • ${room.status}`;
-      joinBtn.addEventListener('click', () => {
-        selectRoom(room.id, node);
+      const displayName =
+        typeof room.name === 'string' && room.name.trim() ? room.name.trim() : room.id;
+      if (title) {
+        title.textContent = displayName;
+      }
+      if (meta) {
+        meta.textContent = `${room.players}/${room.maxPlayers} • ${room.status}`;
+      }
+      node.addEventListener('click', () => {
+        selectRoom(room.id, node, displayName);
       });
-      node.addEventListener('click', (event) => {
-        if (event.target === joinBtn) return;
-        selectRoom(room.id, node);
+      node.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectRoom(room.id, node, displayName);
+        }
       });
+      if (room.id === previousRoomId) {
+        restored = true;
+        state.selectedRoomElement = node;
+        state.selectedRoomId = room.id;
+        state.selectedRoomName = previousRoomName || displayName;
+        node.classList.add('room-card--selected');
+        node.setAttribute('aria-pressed', 'true');
+      }
       roomsList.append(node);
     });
+    if (restored) {
+      updateJoinButton();
+    } else {
+      clearSelectedRoom();
+    }
   } catch (error) {
     console.error('Failed to load rooms', error);
     roomsList.innerHTML = '';
@@ -474,6 +506,7 @@ async function loadRooms() {
     fail.className = 'room-card__meta';
     fail.textContent = 'Не удалось получить список комнат.';
     roomsList.append(fail);
+    clearSelectedRoom();
     const now = Date.now();
     if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
       notifier.error('Не удалось получить список комнат. Проверьте сервер или туннель.', { timeout: 6000 });
@@ -482,14 +515,48 @@ async function loadRooms() {
   }
 }
 
-function selectRoom(roomId, element) {
-  state.selectedRoomId = roomId;
-  playOnlineBtn.disabled = false;
+function clearSelectedRoom() {
   if (state.selectedRoomElement) {
     state.selectedRoomElement.classList.remove('room-card--selected');
+    state.selectedRoomElement.setAttribute('aria-pressed', 'false');
   }
+  state.selectedRoomElement = null;
+  state.selectedRoomId = null;
+  state.selectedRoomName = '';
+  updateJoinButton();
+}
+
+function selectRoom(roomId, element, roomName = '') {
+  if (state.selectedRoomElement && state.selectedRoomElement !== element) {
+    state.selectedRoomElement.classList.remove('room-card--selected');
+    state.selectedRoomElement.setAttribute('aria-pressed', 'false');
+  }
+  state.selectedRoomId = roomId;
+  state.selectedRoomName = roomName;
   state.selectedRoomElement = element;
-  element.classList.add('room-card--selected');
+  if (element) {
+    element.classList.add('room-card--selected');
+    element.setAttribute('aria-pressed', 'true');
+  }
+  updateJoinButton();
+}
+
+function updateJoinButton() {
+  if (!playOnlineBtn) return;
+  if (state.selectedRoomId) {
+    playOnlineBtn.disabled = false;
+    const label = state.selectedRoomName
+      ? `Присоединиться к «${state.selectedRoomName}»`
+      : 'Присоединиться';
+    playOnlineBtn.textContent = label;
+    playOnlineBtn.title = label;
+    playOnlineBtn.dataset.state = 'active';
+  } else {
+    playOnlineBtn.disabled = true;
+    playOnlineBtn.textContent = 'Присоединиться';
+    playOnlineBtn.dataset.state = 'idle';
+    playOnlineBtn.title = 'Выберите комнату, чтобы подключиться';
+  }
 }
 
 async function handleCreateRoom(event) {
@@ -518,7 +585,8 @@ async function handleCreateRoom(event) {
       return title && title.textContent === room.name;
     });
     if (created) {
-      selectRoom(room.id, created);
+      const displayName = typeof room.name === 'string' && room.name.trim() ? room.name.trim() : room.id;
+      selectRoom(room.id, created, displayName);
       created.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
     notifier.success(`Комната «${room.name}» готова к старту.`, { timeout: 5000 });
@@ -893,8 +961,8 @@ async function startOnlineGame() {
   state.currentGame = game;
   try {
     await game.start({ roomId: state.selectedRoomId, playerName: name });
-    ui.setMode('online', state.selectedRoomId);
-    const roomTitle = state.selectedRoomElement?.querySelector('.room-card__title')?.textContent?.trim();
+    ui.setMode('online', state.selectedRoomName || state.selectedRoomId);
+    const roomTitle = state.selectedRoomName || state.selectedRoomElement?.querySelector('.room-card__title')?.textContent?.trim();
     notifier.success(`Вы подключены к комнате ${roomTitle ? `«${roomTitle}»` : state.selectedRoomId}.`, { timeout: 5200 });
   } catch (error) {
     console.error('Online game failed', error);
@@ -967,6 +1035,7 @@ function init() {
       }
     });
   }
+  updateJoinButton();
   loadRooms();
 }
 

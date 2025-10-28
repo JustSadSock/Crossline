@@ -8,6 +8,10 @@ const SHIELD_RADIUS = 38;
 const DASH_DISTANCE = 136;
 const DASH_TRAIL_DURATION = 260;
 const MOVE_SEND_INTERVAL = 1000 / 60;
+const WEAPON_HEAT_PER_SHOT = 0.28;
+const WEAPON_HEAT_COOLDOWN_RATE = 0.0005;
+const WEAPON_OVERHEAT_PENALTY_MS = 1200;
+const WEAPON_HEAT_SAFE_RATIO = 0.45;
 
 const SHIELD_COLOR_FULL_A = { r: 77, g: 246, b: 255 };
 const SHIELD_COLOR_FULL_B = { r: 255, g: 44, b: 251 };
@@ -55,12 +59,16 @@ export class OnlineGame {
     this.lastSent = { x: null, y: null, angle: null };
     this.lastMoveSentAt = 0;
     this.lastShotAt = 0;
+    this.lastFrameTime = 0;
     this.bounds = { width: GAME_WIDTH, height: GAME_HEIGHT };
     this.lastShieldSent = false;
     this.lastDashVector = { x: 1, y: 0 };
     this.dashTrails = [];
     this.previousPositions = new Map();
     this.recentDashMarks = new Map();
+    this.weaponHeat = 0;
+    this.weaponOverheated = false;
+    this.weaponRecoveredAt = 0;
   }
 
   start({ roomId, playerName }) {
@@ -72,6 +80,10 @@ export class OnlineGame {
     this.dashTrails = [];
     this.previousPositions.clear();
     this.recentDashMarks.clear();
+    this.weaponHeat = 0;
+    this.weaponOverheated = false;
+    this.weaponRecoveredAt = 0;
+    this.lastFrameTime = 0;
     return new Promise((resolve, reject) => {
       // Use configured wsBaseUrl if provided, otherwise use current host
       let wsUrl;
@@ -139,19 +151,36 @@ export class OnlineGame {
       this.ws.close();
     }
     this.ws = null;
+    this.weaponHeat = 0;
+    this.weaponOverheated = false;
+    this.weaponRecoveredAt = 0;
+    this.lastFrameTime = 0;
   }
 
   loop() {
     if (!this.running) return;
-    this.update();
+    const now = performance.now();
+    const delta = this.lastFrameTime ? now - this.lastFrameTime : 16;
+    this.lastFrameTime = now;
+    this.update(delta);
     this.render();
     this.animationId = requestAnimationFrame(() => this.loop());
   }
 
-  update() {
+  update(delta) {
     const player = this.players[this.playerId];
     if (!player || !player.alive || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
+    }
+
+    const now = performance.now();
+    const wasOverheated = this.weaponOverheated;
+    this.weaponHeat = Math.max(0, this.weaponHeat - delta * WEAPON_HEAT_COOLDOWN_RATE);
+    if (this.weaponOverheated && this.weaponHeat <= WEAPON_HEAT_SAFE_RATIO && now >= this.weaponRecoveredAt) {
+      this.weaponOverheated = false;
+      if (wasOverheated) {
+        this.ui.setStatus('Оружие остыло', 'success');
+      }
     }
 
     const analogX = this.input.moveVector.x;
@@ -197,7 +226,6 @@ export class OnlineGame {
       this.lastDashVector = { x: moveX / magnitude, y: moveY / magnitude };
     }
 
-    const now = performance.now();
     const positionChanged =
       this.lastSent.x === null ||
       Math.abs(newX - this.lastSent.x) > 0.25 ||
@@ -214,9 +242,22 @@ export class OnlineGame {
       this.lastMoveSentAt = now;
     }
 
-    if (this.input.fire && !this.input.shield && !player.shieldActive && now - this.lastShotAt > SHOT_COOLDOWN) {
+    if (
+      this.input.fire &&
+      !this.input.shield &&
+      !player.shieldActive &&
+      now - this.lastShotAt > SHOT_COOLDOWN &&
+      !this.weaponOverheated &&
+      this.weaponHeat < 1
+    ) {
       this.ws.send(JSON.stringify({ type: 'shoot' }));
       this.lastShotAt = now;
+      this.weaponHeat = Math.min(1, this.weaponHeat + WEAPON_HEAT_PER_SHOT);
+      if (this.weaponHeat >= 1) {
+        this.weaponOverheated = true;
+        this.weaponRecoveredAt = now + WEAPON_OVERHEAT_PENALTY_MS;
+        this.ui.setStatus('Оружие перегрелось', 'warning');
+      }
     }
 
     const dashTriggered = this.input.consumeDashRequest();
@@ -270,6 +311,7 @@ export class OnlineGame {
   }
 
   handleGameState({ players = {}, bullets = [] }) {
+    const previousSelf = this.players[this.playerId];
     const activeIds = new Set();
     const now = performance.now();
     Object.values(players).forEach((player) => {
@@ -292,6 +334,20 @@ export class OnlineGame {
         this.recentDashMarks.delete(id);
       }
     });
+    const currentSelf = players[this.playerId];
+    const wasAlive = previousSelf ? previousSelf.alive !== false : false;
+    const isAlive = currentSelf ? currentSelf.alive !== false : false;
+    if (wasAlive && !isAlive) {
+      this.weaponHeat = 0;
+      this.weaponOverheated = false;
+      this.weaponRecoveredAt = 0;
+    }
+    if (!wasAlive && isAlive) {
+      this.weaponHeat = 0;
+      this.weaponOverheated = false;
+      this.weaponRecoveredAt = 0;
+      this.lastShotAt = performance.now() - SHOT_COOLDOWN;
+    }
     this.players = players;
     this.bullets = bullets;
     this.updateUiFromState();

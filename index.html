@@ -35,6 +35,9 @@
           <button id="refresh-rooms" class="button button--ghost" type="button">Обновить</button>
         </div>
         <div id="rooms-list" class="rooms-list" aria-live="polite"></div>
+        <button id="play-online" class="button button--primary panel__join" type="button" disabled>
+          Присоединиться
+        </button>
         <form id="create-room-form" class="panel__form">
           <label class="panel__label" for="room-name">Создать комнату</label>
           <div class="panel__row">
@@ -62,8 +65,7 @@
         </div>
         <div class="mode-card" data-mode="online">
           <h3>Онлайн арена</h3>
-          <p>Подключайтесь к живым игрокам и сражайтесь в реальном времени.</p>
-          <button id="play-online" class="button button--primary" type="button" disabled>Присоединиться</button>
+          <p>Выберите комнату слева, чтобы подключиться к живым игрокам.</p>
         </div>
       </section>
     </section>
@@ -181,7 +183,6 @@
         <h3 class="room-card__title"></h3>
         <p class="room-card__meta"></p>
       </div>
-      <button class="button room-card__join" type="button">Войти</button>
     </article>
   </template>
 
