@@ -13,6 +13,23 @@ const WEAPON_HEAT_COOLDOWN_RATE = 0.0005;
 const WEAPON_OVERHEAT_PENALTY_MS = 1200;
 const WEAPON_HEAT_SAFE_RATIO = 0.45;
 
+const PLAYER_FIELD_FLAGS = {
+  POSITION: 1 << 0,
+  ANGLE: 1 << 1,
+  HEALTH: 1 << 2,
+  SCORE: 1 << 3,
+  SHIELD: 1 << 4,
+  DASH: 1 << 5,
+  STATUS: 1 << 6,
+  NAME: 1 << 7,
+};
+
+const BULLET_FIELD_FLAGS = {
+  POSITION: 1 << 0,
+  ANGLE: 1 << 1,
+  OWNER: 1 << 2,
+};
+
 const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
 
 const SHIELD_COLOR_FULL_A = { r: 77, g: 246, b: 255 };
@@ -367,26 +384,47 @@ export class OnlineGame {
       const id = decodeUtf8(buffer, offset, idLength);
       offset += idLength;
       let name;
-      if (flags & 1) {
+      if (flags & 8) {
         const nameLength = view.getUint8(offset);
         offset += 1;
         name = decodeUtf8(buffer, offset, nameLength);
         offset += nameLength;
       }
-      const x = view.getFloat32(offset, true);
-      offset += 4;
-      const y = view.getFloat32(offset, true);
-      offset += 4;
-      const angle = view.getFloat32(offset, true);
-      offset += 4;
-      const health = view.getFloat32(offset, true);
-      offset += 4;
-      const score = view.getFloat32(offset, true);
-      offset += 4;
-      const shieldCharge = view.getFloat32(offset, true);
-      offset += 4;
-      const dashCharge = view.getFloat32(offset, true);
-      offset += 4;
+      const fieldMask = view.getUint16(offset, true);
+      offset += 2;
+      let x;
+      let y;
+      let angle;
+      let health;
+      let score;
+      let shieldCharge;
+      let dashCharge;
+      if (fieldMask & PLAYER_FIELD_FLAGS.POSITION) {
+        x = view.getFloat32(offset, true);
+        offset += 4;
+        y = view.getFloat32(offset, true);
+        offset += 4;
+      }
+      if (fieldMask & PLAYER_FIELD_FLAGS.ANGLE) {
+        angle = view.getFloat32(offset, true);
+        offset += 4;
+      }
+      if (fieldMask & PLAYER_FIELD_FLAGS.HEALTH) {
+        health = view.getFloat32(offset, true);
+        offset += 4;
+      }
+      if (fieldMask & PLAYER_FIELD_FLAGS.SCORE) {
+        score = view.getFloat32(offset, true);
+        offset += 4;
+      }
+      if (fieldMask & PLAYER_FIELD_FLAGS.SHIELD) {
+        shieldCharge = view.getFloat32(offset, true);
+        offset += 4;
+      }
+      if (fieldMask & PLAYER_FIELD_FLAGS.DASH) {
+        dashCharge = view.getFloat32(offset, true);
+        offset += 4;
+      }
       players.push({
         id,
         name,
@@ -394,12 +432,13 @@ export class OnlineGame {
         y,
         angle,
         health,
-        alive: (flags & 2) !== 0,
         score,
         shieldCharge,
-        shieldActive: (flags & 4) !== 0,
         dashCharge,
         fullSync: (flags & 1) !== 0,
+        alive: (flags & 2) !== 0,
+        shieldActive: (flags & 4) !== 0,
+        mask: fieldMask,
       });
     }
 
@@ -418,20 +457,29 @@ export class OnlineGame {
       offset += 1;
       const id = view.getUint32(offset, true);
       offset += 4;
-      const x = view.getFloat32(offset, true);
-      offset += 4;
-      const y = view.getFloat32(offset, true);
-      offset += 4;
-      const angle = view.getFloat32(offset, true);
-      offset += 4;
+      const fieldMask = view.getUint8(offset);
+      offset += 1;
+      let x;
+      let y;
+      let angle;
       let owner;
-      if (flags & 1) {
+      if (fieldMask & BULLET_FIELD_FLAGS.POSITION) {
+        x = view.getFloat32(offset, true);
+        offset += 4;
+        y = view.getFloat32(offset, true);
+        offset += 4;
+      }
+      if (fieldMask & BULLET_FIELD_FLAGS.ANGLE) {
+        angle = view.getFloat32(offset, true);
+        offset += 4;
+      }
+      if (fieldMask & BULLET_FIELD_FLAGS.OWNER) {
         const ownerLength = view.getUint8(offset);
         offset += 1;
         owner = decodeUtf8(buffer, offset, ownerLength);
         offset += ownerLength;
       }
-      bullets.push({ id, x, y, angle, owner, fullSync: (flags & 1) !== 0 });
+      bullets.push({ id, x, y, angle, owner, fullSync: (flags & 1) !== 0, mask: fieldMask });
     }
 
     const removedBullets = [];
@@ -457,26 +505,47 @@ export class OnlineGame {
       if (player.name !== undefined) {
         existing.name = player.name;
       }
-      existing.x = player.x;
-      existing.y = player.y;
-      existing.angle = player.angle;
-      existing.health = player.health;
-      existing.alive = player.alive;
-      existing.score = player.score;
-      existing.shieldCharge = player.shieldCharge;
-      existing.shieldActive = player.shieldActive;
-      existing.dashCharge = player.dashCharge;
-      this.players[player.id] = existing;
-      if (previous && player.alive && previous.alive !== false) {
-        const dx = player.x - previous.x;
-        const dy = player.y - previous.y;
-        const distance = Math.hypot(dx, dy);
-        const recentDash = this.recentDashMarks.get(player.id);
-        if (distance > DASH_DISTANCE * 0.6 && (!recentDash || now - recentDash > DASH_TRAIL_DURATION)) {
-          this.recordDashTrail(player.id, previous.x, previous.y, player.x, player.y);
+      if (player.x !== undefined && player.y !== undefined) {
+        if (
+          previous &&
+          typeof previous.x === 'number' &&
+          typeof previous.y === 'number' &&
+          player.alive &&
+          previous.alive !== false
+        ) {
+          const dx = player.x - previous.x;
+          const dy = player.y - previous.y;
+          const distance = Math.hypot(dx, dy);
+          const recentDash = this.recentDashMarks.get(player.id);
+          if (distance > DASH_DISTANCE * 0.6 && (!recentDash || now - recentDash > DASH_TRAIL_DURATION)) {
+            this.recordDashTrail(player.id, previous.x, previous.y, player.x, player.y);
+          }
         }
+        existing.x = player.x;
+        existing.y = player.y;
+        this.previousPositions.set(player.id, { x: player.x, y: player.y, alive: player.alive });
+      } else if (previous) {
+        previous.alive = player.alive;
+        this.previousPositions.set(player.id, previous);
       }
-      this.previousPositions.set(player.id, { x: player.x, y: player.y, alive: player.alive });
+      if (player.angle !== undefined) {
+        existing.angle = player.angle;
+      }
+      if (player.health !== undefined) {
+        existing.health = player.health;
+      }
+      existing.alive = player.alive;
+      if (player.score !== undefined) {
+        existing.score = player.score;
+      }
+      if (player.shieldCharge !== undefined) {
+        existing.shieldCharge = player.shieldCharge;
+      }
+      existing.shieldActive = player.shieldActive;
+      if (player.dashCharge !== undefined) {
+        existing.dashCharge = player.dashCharge;
+      }
+      this.players[player.id] = existing;
     });
 
     removedPlayers.forEach((id) => {
@@ -491,9 +560,15 @@ export class OnlineGame {
         return;
       }
       const existing = this.bullets.get(bullet.id) || { id: bullet.id };
-      existing.x = bullet.x;
-      existing.y = bullet.y;
-      existing.angle = bullet.angle;
+      if (bullet.x !== undefined) {
+        existing.x = bullet.x;
+      }
+      if (bullet.y !== undefined) {
+        existing.y = bullet.y;
+      }
+      if (bullet.angle !== undefined) {
+        existing.angle = bullet.angle;
+      }
       if (bullet.owner !== undefined) {
         existing.owner = bullet.owner;
       }
