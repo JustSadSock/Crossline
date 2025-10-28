@@ -13,6 +13,8 @@ const WEAPON_HEAT_COOLDOWN_RATE = 0.0005;
 const WEAPON_OVERHEAT_PENALTY_MS = 1200;
 const WEAPON_HEAT_SAFE_RATIO = 0.45;
 
+const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+
 const SHIELD_COLOR_FULL_A = { r: 77, g: 246, b: 255 };
 const SHIELD_COLOR_FULL_B = { r: 255, g: 44, b: 251 };
 const SHIELD_COLOR_DRAINED_A = { r: 46, g: 94, b: 124 };
@@ -50,7 +52,7 @@ export class OnlineGame {
     this.ui = ui;
     this.wsBaseUrl = wsBaseUrl;
     this.players = {};
-    this.bullets = [];
+    this.bullets = new Map();
     this.playerId = null;
     this.roomId = null;
     this.ws = null;
@@ -73,6 +75,8 @@ export class OnlineGame {
 
   start({ roomId, playerName }) {
     this.roomId = roomId;
+    this.players = {};
+    this.bullets = new Map();
     this.lastSent = { x: null, y: null, angle: null };
     this.lastMoveSentAt = 0;
     this.lastShieldSent = false;
@@ -94,6 +98,7 @@ export class OnlineGame {
         wsUrl = `${protocol}//${window.location.host}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
       }
       this.ws = new WebSocket(wsUrl);
+      this.ws.binaryType = 'arraybuffer';
       let resolved = false;
 
       this.ws.addEventListener('open', () => {
@@ -101,23 +106,41 @@ export class OnlineGame {
       });
 
       this.ws.addEventListener('message', (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'init') {
-          this.playerId = data.playerId;
-          if (data.constants && data.constants.width && data.constants.height) {
-            this.bounds.width = data.constants.width;
-            this.bounds.height = data.constants.height;
+        if (typeof event.data === 'string') {
+          const data = JSON.parse(event.data);
+          if (data.type === 'init') {
+            this.playerId = data.playerId;
+            if (data.constants && data.constants.width && data.constants.height) {
+              this.bounds.width = data.constants.width;
+              this.bounds.height = data.constants.height;
+            }
+            if (!resolved) {
+              resolved = true;
+              resolve();
+            }
+            this.running = true;
+            this.loop();
+          } else if (data.type === 'gameState') {
+            const playerUpdates = Object.values(data.players || {}).map((player) => ({
+              ...player,
+              fullSync: true,
+            }));
+            const bulletUpdates = Array.isArray(data.bullets)
+              ? data.bullets.map((bullet) => ({ ...bullet, fullSync: true }))
+              : [];
+            this.handleGameState({
+              players: playerUpdates,
+              removedPlayers: [],
+              bullets: bulletUpdates,
+              removedBullets: [],
+            });
+          } else if (data.type === 'error') {
+            this.ui.setStatus(data.message || 'Ошибка сервера', 'error');
           }
-          if (!resolved) {
-            resolved = true;
-            resolve();
-          }
-          this.running = true;
-          this.loop();
-        } else if (data.type === 'gameState') {
-          this.handleGameState(data);
-        } else if (data.type === 'error') {
-          this.ui.setStatus(data.message || 'Ошибка сервера', 'error');
+        } else if (event.data instanceof ArrayBuffer) {
+          this.handleBinaryUpdate(event.data);
+        } else if (event.data instanceof Blob) {
+          event.data.arrayBuffer().then((buffer) => this.handleBinaryUpdate(buffer));
         }
       });
 
@@ -151,6 +174,10 @@ export class OnlineGame {
       this.ws.close();
     }
     this.ws = null;
+    this.players = {};
+    if (this.bullets) {
+      this.bullets = new Map();
+    }
     this.weaponHeat = 0;
     this.weaponOverheated = false;
     this.weaponRecoveredAt = 0;
@@ -310,13 +337,136 @@ export class OnlineGame {
     }
   }
 
-  handleGameState({ players = {}, bullets = [] }) {
-    const previousSelf = this.players[this.playerId];
-    const activeIds = new Set();
+  handleBinaryUpdate(buffer) {
+    if (!buffer) return;
+    const view = new DataView(buffer);
+    if (view.byteLength < 9) {
+      return;
+    }
+    let offset = 0;
+    const messageType = view.getUint8(offset);
+    offset += 1;
+    if (messageType !== 1) {
+      return;
+    }
+    const playerCount = view.getUint16(offset, true);
+    offset += 2;
+    const removedPlayerCount = view.getUint16(offset, true);
+    offset += 2;
+    const bulletCount = view.getUint16(offset, true);
+    offset += 2;
+    const removedBulletCount = view.getUint16(offset, true);
+    offset += 2;
+
+    const players = [];
+    for (let i = 0; i < playerCount; i += 1) {
+      const flags = view.getUint8(offset);
+      offset += 1;
+      const idLength = view.getUint8(offset);
+      offset += 1;
+      const id = decodeUtf8(buffer, offset, idLength);
+      offset += idLength;
+      let name;
+      if (flags & 1) {
+        const nameLength = view.getUint8(offset);
+        offset += 1;
+        name = decodeUtf8(buffer, offset, nameLength);
+        offset += nameLength;
+      }
+      const x = view.getFloat32(offset, true);
+      offset += 4;
+      const y = view.getFloat32(offset, true);
+      offset += 4;
+      const angle = view.getFloat32(offset, true);
+      offset += 4;
+      const health = view.getFloat32(offset, true);
+      offset += 4;
+      const score = view.getFloat32(offset, true);
+      offset += 4;
+      const shieldCharge = view.getFloat32(offset, true);
+      offset += 4;
+      const dashCharge = view.getFloat32(offset, true);
+      offset += 4;
+      players.push({
+        id,
+        name,
+        x,
+        y,
+        angle,
+        health,
+        alive: (flags & 2) !== 0,
+        score,
+        shieldCharge,
+        shieldActive: (flags & 4) !== 0,
+        dashCharge,
+        fullSync: (flags & 1) !== 0,
+      });
+    }
+
+    const removedPlayers = [];
+    for (let i = 0; i < removedPlayerCount; i += 1) {
+      const idLength = view.getUint8(offset);
+      offset += 1;
+      const id = decodeUtf8(buffer, offset, idLength);
+      offset += idLength;
+      removedPlayers.push(id);
+    }
+
+    const bullets = [];
+    for (let i = 0; i < bulletCount; i += 1) {
+      const flags = view.getUint8(offset);
+      offset += 1;
+      const id = view.getUint32(offset, true);
+      offset += 4;
+      const x = view.getFloat32(offset, true);
+      offset += 4;
+      const y = view.getFloat32(offset, true);
+      offset += 4;
+      const angle = view.getFloat32(offset, true);
+      offset += 4;
+      let owner;
+      if (flags & 1) {
+        const ownerLength = view.getUint8(offset);
+        offset += 1;
+        owner = decodeUtf8(buffer, offset, ownerLength);
+        offset += ownerLength;
+      }
+      bullets.push({ id, x, y, angle, owner, fullSync: (flags & 1) !== 0 });
+    }
+
+    const removedBullets = [];
+    for (let i = 0; i < removedBulletCount; i += 1) {
+      const id = view.getUint32(offset, true);
+      offset += 4;
+      removedBullets.push(id);
+    }
+
+    this.handleGameState({ players, removedPlayers, bullets, removedBullets });
+  }
+
+  handleGameState({ players = [], removedPlayers = [], bullets = [], removedBullets = [] }) {
     const now = performance.now();
-    Object.values(players).forEach((player) => {
-      activeIds.add(player.id);
+    const wasAlive = this.players[this.playerId] ? this.players[this.playerId].alive !== false : false;
+
+    players.forEach((player) => {
+      if (!player || !player.id) {
+        return;
+      }
+      const existing = this.players[player.id] || { id: player.id };
       const previous = this.previousPositions.get(player.id);
+      if (player.name !== undefined) {
+        existing.name = player.name;
+      }
+      existing.x = player.x;
+      existing.y = player.y;
+      existing.angle = player.angle;
+      existing.health = player.health;
+      existing.alive = player.alive;
+      existing.score = player.score;
+      existing.shieldCharge = player.shieldCharge;
+      existing.shieldActive = player.shieldActive;
+      existing.dashCharge = player.dashCharge;
+      this.players[player.id] = existing;
       if (previous && player.alive && previous.alive !== false) {
         const dx = player.x - previous.x;
         const dy = player.y - previous.y;
@@ -328,14 +478,33 @@ export class OnlineGame {
       }
       this.previousPositions.set(player.id, { x: player.x, y: player.y, alive: player.alive });
     });
-    Array.from(this.previousPositions.keys()).forEach((id) => {
-      if (!activeIds.has(id)) {
-        this.previousPositions.delete(id);
-        this.recentDashMarks.delete(id);
-      }
+
+    removedPlayers.forEach((id) => {
+      if (!id) return;
+      delete this.players[id];
+      this.previousPositions.delete(id);
+      this.recentDashMarks.delete(id);
     });
-    const currentSelf = players[this.playerId];
-    const wasAlive = previousSelf ? previousSelf.alive !== false : false;
+
+    bullets.forEach((bullet) => {
+      if (bullet == null || bullet.id == null) {
+        return;
+      }
+      const existing = this.bullets.get(bullet.id) || { id: bullet.id };
+      existing.x = bullet.x;
+      existing.y = bullet.y;
+      existing.angle = bullet.angle;
+      if (bullet.owner !== undefined) {
+        existing.owner = bullet.owner;
+      }
+      this.bullets.set(bullet.id, existing);
+    });
+
+    removedBullets.forEach((id) => {
+      this.bullets.delete(id);
+    });
+
+    const currentSelf = this.players[this.playerId];
     const isAlive = currentSelf ? currentSelf.alive !== false : false;
     if (wasAlive && !isAlive) {
       this.weaponHeat = 0;
@@ -348,8 +517,7 @@ export class OnlineGame {
       this.weaponRecoveredAt = 0;
       this.lastShotAt = performance.now() - SHOT_COOLDOWN;
     }
-    this.players = players;
-    this.bullets = bullets;
+
     this.updateUiFromState();
   }
 
@@ -557,4 +725,19 @@ export class OnlineGame {
       ctx.restore();
     }
   }
+}
+
+function decodeUtf8(buffer, offset, length) {
+  if (!length) {
+    return '';
+  }
+  if (textDecoder) {
+    return textDecoder.decode(new Uint8Array(buffer, offset, length));
+  }
+  const bytes = new Uint8Array(buffer, offset, length);
+  let result = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    result += String.fromCharCode(bytes[i]);
+  }
+  return result;
 }
