@@ -26,10 +26,14 @@ ensureDefaultRooms();
 setInterval(() => pruneRooms(), 60 * 1000);
 
 const server = http.createServer(async (req, res) => {
+  if (applyCors(req, res)) {
+    return;
+  }
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (req.method === 'GET' && url.pathname === '/rooms') {
     const rooms = listRooms();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
     res.end(JSON.stringify(rooms));
     return;
   }
@@ -41,18 +45,21 @@ const server = http.createServer(async (req, res) => {
       const name = typeof payload.name === 'string' ? payload.name : '';
       const room = createRoom({ name: sanitizeName(name).slice(0, 24) });
       const info = room.getLobbyInfo();
-      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(201);
       res.end(JSON.stringify(info));
     } catch (error) {
       console.error('Failed to create room', error);
-      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.writeHead(400);
       res.end('Не удалось создать комнату');
     }
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
     res.end(JSON.stringify({ status: 'ok' }));
     return;
   }
@@ -206,10 +213,12 @@ async function serveStatic(requestPath, res) {
     const ext = path.extname(resolved).toLowerCase();
     const mimeType = getMimeType(ext);
     const content = await readFile(resolved);
-    res.writeHead(200, { 'Content-Type': mimeType });
+    res.setHeader('Content-Type', mimeType);
+    res.writeHead(200);
     res.end(content);
   } catch (error) {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.writeHead(404);
     res.end('Файл не найден');
   }
 }
@@ -295,4 +304,20 @@ function isBindError(error) {
     error instanceof Error &&
     (error.code === 'EADDRINUSE' || error.code === 'EACCES' || error.code === 'EADDRNOTAVAIL')
   );
+}
+
+function applyCors(req, res) {
+  const allowedOrigin = process.env.CROSSLINE_CORS_ORIGIN || '*';
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'false');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  return false;
 }
