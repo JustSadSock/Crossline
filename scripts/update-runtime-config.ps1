@@ -68,8 +68,20 @@ if ($wsUrl) {
 $encoding = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllLines($configPath, $configLines, $encoding)
 
+$jsonConfig = [ordered]@{}
+$jsonConfig['generatedAt'] = (Get-Date).ToUniversalTime().ToString('o')
+$jsonConfig['apiOrigin'] = $publicUrl
+if ($wsUrl) {
+    $jsonConfig['wsOrigin'] = $wsUrl
+}
+
+$jsonConfigPath = [IO.Path]::Combine($ProjectDir, 'scripts', 'crossline-runtime-config.json')
+$jsonContent = ($jsonConfig | ConvertTo-Json -Depth 2)
+[IO.File]::WriteAllText($jsonConfigPath, $jsonContent, $encoding)
+
 Write-Output "TUNNEL_URL=$publicUrl"
 if ($wsUrl) {
     Write-Output "WS_URL=$wsUrl"
 }
 Write-Output "CONFIG_PATH=$configPath"
+Write-Output "JSON_CONFIG_PATH=$jsonConfigPath"

@@ -3,3 +3,4 @@ npm-debug.log
 .DS_Store
 *.log
 scripts/.crossline-tunnel.env
+scripts/crossline-runtime-config.json
