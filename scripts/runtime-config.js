@@ -29,8 +29,22 @@
     );
   };
 
+  const sanitizeRawValue = (value) => {
+    if (value == null) return '';
+    const raw = typeof value === 'string' ? value.trim() : `${value}`.trim();
+    if (!raw) return '';
+    const lowered = raw.toLowerCase();
+    if (lowered === 'undefined' || lowered === 'null' || lowered === 'false') {
+      return '';
+    }
+    if (/^<%=\s*process\.env/i.test(raw)) {
+      return '';
+    }
+    return raw;
+  };
+
   const normalizeHttpOrigin = (value) => {
-    const raw = typeof value === 'string' ? value.trim() : '';
+    const raw = sanitizeRawValue(value);
     if (!raw) return '';
     try {
       const parsed = raw.includes('://') ? new URL(raw) : new URL(`https://${raw}`);
@@ -51,7 +65,7 @@
   };
 
   const normalizeWsOrigin = (value) => {
-    const raw = typeof value === 'string' ? value.trim() : '';
+    const raw = sanitizeRawValue(value);
     if (!raw) return '';
     try {
       const parsed = raw.includes('://') ? new URL(raw) : new URL(`wss://${raw}`);

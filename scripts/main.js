@@ -138,6 +138,25 @@ function updateDashUi(value) {
 
 const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '::1'];
 const NETLIFY_HOST_RE = /\.netlify\.(app|dev)$/i;
+const PLACEHOLDER_VALUE_RE = /^<%=\s*process\.env/i;
+
+function sanitizeUrlCandidate(value) {
+  if (value == null) {
+    return '';
+  }
+  const raw = typeof value === 'string' ? value.trim() : `${value}`.trim();
+  if (!raw) {
+    return '';
+  }
+  const lowered = raw.toLowerCase();
+  if (lowered === 'undefined' || lowered === 'null' || lowered === 'false') {
+    return '';
+  }
+  if (PLACEHOLDER_VALUE_RE.test(raw)) {
+    return '';
+  }
+  return raw;
+}
 
 function isPrivateHostname(hostname) {
   if (!hostname) return false;
@@ -159,7 +178,7 @@ function isLocalEnvironment() {
 }
 
 function normalizeHttpUrl(rawUrl) {
-  const value = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+  const value = sanitizeUrlCandidate(rawUrl);
   if (!value) {
     return '';
   }
@@ -193,7 +212,7 @@ function httpToWs(baseUrl) {
 }
 
 function normalizeWsUrl(rawUrl) {
-  const value = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+  const value = sanitizeUrlCandidate(rawUrl);
   if (!value) {
     return '';
   }
