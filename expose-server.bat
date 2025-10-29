@@ -100,7 +100,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "
   }
   if ($publicUrl) {
     Write-Host "[READY] Публичный адрес: $publicUrl" -ForegroundColor Green;
-    Write-Host "[HINT] Вставьте эту ссылку в поле 'URL сервера' на клиенте." -ForegroundColor Cyan;
+    Write-Host "[HINT] Передайте этот адрес клиенту через параметр '?server=' или переменные окружения." -ForegroundColor Cyan;
   } else {
     Write-Host "[WARN] Не удалось автоматически получить ссылку. Откройте окно ngrok." -ForegroundColor Yellow;
   }
