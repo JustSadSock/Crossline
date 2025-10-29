@@ -4,7 +4,8 @@
   "description": "A browser-based multiplayer shooter game",
   "main": "server/index.js",
   "scripts": {
-    "test": "node --check server/index.js"
+    "test": "node --check server/index.js",
+    "build": "echo 'Static build step not required'"
   },
   "keywords": ["game", "shooter", "multiplayer", "websocket"],
   "author": "",
