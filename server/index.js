@@ -24,8 +24,10 @@ const PING_INTERVAL_MS = Math.max(5000, parseInt(process.env.CROSSLINE_PING_INTE
 const SECURITY_CONFIG = config.security;
 const CORS_ALLOWED_ORIGINS = SECURITY_CONFIG.cors.allowedOrigins;
 const CORS_ALLOW_SAME_HOST = SECURITY_CONFIG.cors.allowSameHost;
+const CORS_ALLOW_ANY = SECURITY_CONFIG.cors.allowAny;
 const WS_ALLOWED_ORIGINS = SECURITY_CONFIG.websocket.allowedOrigins;
 const WS_ALLOW_SAME_HOST = SECURITY_CONFIG.websocket.allowSameHost;
+const WS_ALLOW_ANY = SECURITY_CONFIG.websocket.allowAny;
 const MAX_BODY_BYTES = SECURITY_CONFIG.http.maxBodyBytes;
 
 bootstrap();
@@ -496,7 +498,9 @@ function applyCors(req, res) {
   const originHeader = req.headers.origin;
   const hasAllowedOrigins = CORS_ALLOWED_ORIGINS.size > 0;
 
-  if (originHeader) {
+  if (CORS_ALLOW_ANY) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (originHeader) {
     appendVaryHeader(res, 'Origin');
     const isAllowed =
       (hasAllowedOrigins && isOriginExplicitlyAllowed(originHeader)) ||
@@ -582,6 +586,10 @@ function isSameHostOrigin(origin, headers) {
 function allowWebSocketConnection(info) {
   const origin = info.origin || (info.req && info.req.headers && info.req.headers.origin);
   if (!origin) {
+    return true;
+  }
+
+  if (WS_ALLOW_ANY) {
     return true;
   }
 
