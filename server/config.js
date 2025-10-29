@@ -74,14 +74,33 @@ function resolveClusterEnabled(workerCount) {
 
 function parseOriginList(value) {
   if (!value) {
-    return [];
+    return {
+      allowAny: false,
+      origins: [],
+    };
   }
 
-  return String(value)
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => entry.replace(/\/+$/, ''));
+  let allowAny = false;
+  const origins = [];
+
+  for (const entry of String(value).split(',')) {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (trimmed === '*') {
+      allowAny = true;
+      continue;
+    }
+
+    origins.push(trimmed.replace(/\/+$/, ''));
+  }
+
+  return {
+    allowAny,
+    origins,
+  };
 }
 
 function parseBodyLimit(value) {
@@ -100,9 +119,8 @@ function parseBodyLimit(value) {
 const cpuCount = getCpuCount();
 const workerCount = resolveWorkerCount(cpuCount);
 const clusterEnabled = resolveClusterEnabled(workerCount);
-const allowedCorsOrigins = new Set(
-  parseOriginList(process.env.CROSSLINE_CORS_ORIGIN).map((origin) => origin.toLowerCase()),
-);
+const corsOriginsConfig = parseOriginList(process.env.CROSSLINE_CORS_ORIGIN);
+const allowedCorsOrigins = new Set(corsOriginsConfig.origins.map((origin) => origin.toLowerCase()));
 const maxBodyBytes = parseBodyLimit(process.env.CROSSLINE_MAX_BODY_BYTES);
 
 module.exports = {
@@ -115,6 +133,7 @@ module.exports = {
     cors: {
       allowedOrigins: allowedCorsOrigins,
       allowSameHost: true,
+      allowAny: corsOriginsConfig.allowAny,
     },
     http: {
       maxBodyBytes,
@@ -122,6 +141,7 @@ module.exports = {
     websocket: {
       allowedOrigins: allowedCorsOrigins,
       allowSameHost: true,
+      allowAny: corsOriginsConfig.allowAny,
     },
   },
 };
