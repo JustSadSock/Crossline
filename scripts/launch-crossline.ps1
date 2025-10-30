@@ -124,7 +124,7 @@ function Get-MissingPackages {
         }
     }
 
-    return $missing
+    return ,($missing.ToArray())
 }
 
 Require-Command -Name 'node' -FriendlyName 'Node.js'
@@ -153,9 +153,11 @@ if (-not (Test-Path -Path $nodeModules)) {
     $installReason = 'node_modules directory is missing'
 } elseif ($manifest) {
     $missingPackages = Get-MissingPackages -ModulesRoot $nodeModules -Manifest $manifest
-    if ($missingPackages.Count -gt 0) {
+    $missingCount = @($missingPackages).Count
+    if ($missingCount -gt 0) {
         $shouldInstall = $true
-        $installReason = "missing packages: $($missingPackages -join ', ')"
+        $missingList = @($missingPackages)
+        $installReason = "missing packages: $($missingList -join ', ')"
     }
 }
 
