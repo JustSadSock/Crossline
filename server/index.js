@@ -182,18 +182,18 @@ function startServer() {
     });
 
     if (!roomId) {
-      sendAndClose(ws, { type: 'error', message: 'Комната не указана' }, 1008);
+      sendAndClose(ws, 'Комната не указана', 1008);
       return;
     }
 
     const room = getRoom(roomId);
     if (!room) {
-      sendAndClose(ws, { type: 'error', message: 'Комната не найдена' }, 1008);
+      sendAndClose(ws, 'Комната не найдена', 1008);
       return;
     }
 
     if (room.isFull()) {
-      sendAndClose(ws, { type: 'error', message: 'Комната заполнена' }, 1008);
+      sendAndClose(ws, 'Комната заполнена', 1008);
       return;
     }
 
@@ -204,7 +204,7 @@ function startServer() {
       connectionLog.info({ playerId }, 'websocket client attached');
     } catch (error) {
       connectionLog.error({ err: error }, 'websocket attach error');
-      sendAndClose(ws, { type: 'error', message: 'Не удалось присоединиться' }, 1011);
+      sendAndClose(ws, 'Не удалось присоединиться', 1011);
       return;
     }
 
@@ -450,15 +450,31 @@ function sanitizeName(value) {
     .slice(0, 20);
 }
 
-function sendAndClose(ws, payload, code = 1000) {
+function sendAndClose(ws, message, code = 1000) {
   try {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
+      const payload = encodeErrorMessage(typeof message === 'string' ? message : 'Ошибка');
+      ws.send(payload, { binary: true });
     }
     ws.close(code);
   } catch (error) {
     // ignore
   }
+}
+
+function encodeErrorMessage(message) {
+  const text = message || '';
+  const length = Math.min(255, Buffer.byteLength(text, 'utf8'));
+  const buffer = Buffer.allocUnsafe(2 + length);
+  let offset = 0;
+  buffer.writeUInt8(3, offset);
+  offset += 1;
+  buffer.writeUInt8(length & 0xff, offset);
+  offset += 1;
+  if (length) {
+    buffer.write(text, offset, length, 'utf8');
+  }
+  return buffer;
 }
 
 function parsePort(value, fallback) {

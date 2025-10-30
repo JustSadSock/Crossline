@@ -30,6 +30,20 @@ const BULLET_FIELD_FLAGS = {
   OWNER: 1 << 2,
 };
 
+const SERVER_MESSAGE_TYPES = {
+  STATE_UPDATE: 1,
+  INIT: 2,
+  ERROR: 3,
+};
+
+const CLIENT_MESSAGE_TYPES = {
+  MOVE: 1,
+  SHOOT: 2,
+  SHIELD: 3,
+  DASH: 4,
+  RESPAWN: 5,
+};
+
 const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
 
 const SHIELD_COLOR_FULL_A = { r: 77, g: 246, b: 255 };
@@ -88,6 +102,7 @@ export class OnlineGame {
     this.weaponHeat = 0;
     this.weaponOverheated = false;
     this.weaponRecoveredAt = 0;
+    this._startHandlers = null;
   }
 
   start({ roomId, playerName }) {
@@ -116,66 +131,31 @@ export class OnlineGame {
       }
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = 'arraybuffer';
-      let resolved = false;
+      this._startHandlers = { resolve, reject, settled: false };
 
       this.ws.addEventListener('open', () => {
         this.ui.setStatus('Соединение установлено', 'success');
       });
 
       this.ws.addEventListener('message', (event) => {
-        if (typeof event.data === 'string') {
-          const data = JSON.parse(event.data);
-          if (data.type === 'init') {
-            this.playerId = data.playerId;
-            if (data.constants && data.constants.width && data.constants.height) {
-              this.bounds.width = data.constants.width;
-              this.bounds.height = data.constants.height;
-            }
-            if (!resolved) {
-              resolved = true;
-              resolve();
-            }
-            this.running = true;
-            this.loop();
-          } else if (data.type === 'gameState') {
-            const playerUpdates = Object.values(data.players || {}).map((player) => ({
-              ...player,
-              fullSync: true,
-            }));
-            const bulletUpdates = Array.isArray(data.bullets)
-              ? data.bullets.map((bullet) => ({ ...bullet, fullSync: true }))
-              : [];
-            this.handleGameState({
-              players: playerUpdates,
-              removedPlayers: [],
-              bullets: bulletUpdates,
-              removedBullets: [],
-            });
-          } else if (data.type === 'error') {
-            this.ui.setStatus(data.message || 'Ошибка сервера', 'error');
-          }
-        } else if (event.data instanceof ArrayBuffer) {
-          this.handleBinaryUpdate(event.data);
-        } else if (event.data instanceof Blob) {
-          event.data.arrayBuffer().then((buffer) => this.handleBinaryUpdate(buffer));
+        if (event.data instanceof ArrayBuffer) {
+          this.handleBinaryMessage(event.data);
+        } else if (typeof Blob !== 'undefined' && event.data instanceof Blob) {
+          event.data.arrayBuffer().then((buffer) => this.handleBinaryMessage(buffer));
+        } else if (typeof event.data === 'string') {
+          this.handleLegacyMessage(event.data);
         }
       });
 
       this.ws.addEventListener('close', () => {
-        if (!resolved) {
-          reject(new Error('Соединение закрыто'));
-          resolved = true;
-        }
+        this.rejectStart(new Error('Соединение закрыто'));
         this.ui.setStatus('Соединение закрыто', 'error');
         this.stop();
       });
 
       this.ws.addEventListener('error', (error) => {
         console.error('WebSocket error', error);
-        if (!resolved) {
-          reject(error);
-          resolved = true;
-        }
+        this.rejectStart(error);
         this.ui.setStatus('Ошибка сети', 'error');
       });
     });
@@ -199,6 +179,7 @@ export class OnlineGame {
     this.weaponOverheated = false;
     this.weaponRecoveredAt = 0;
     this.lastFrameTime = 0;
+    this._startHandlers = null;
   }
 
   loop() {
@@ -276,12 +257,7 @@ export class OnlineGame {
       Math.abs(newY - this.lastSent.y) > 0.25;
     const angleChanged = this.lastSent.angle === null || Math.abs(angle - this.lastSent.angle) > 0.01;
     if ((positionChanged || angleChanged) && now - this.lastMoveSentAt >= MOVE_SEND_INTERVAL) {
-      this.ws.send(JSON.stringify({
-        type: 'move',
-        x: newX,
-        y: newY,
-        angle,
-      }));
+      this.sendMoveMessage(newX, newY, angle);
       this.lastSent = { x: newX, y: newY, angle };
       this.lastMoveSentAt = now;
     }
@@ -294,7 +270,7 @@ export class OnlineGame {
       !this.weaponOverheated &&
       this.weaponHeat < 1
     ) {
-      this.ws.send(JSON.stringify({ type: 'shoot' }));
+      this.sendShootMessage();
       this.lastShotAt = now;
       this.weaponHeat = Math.min(1, this.weaponHeat + WEAPON_HEAT_PER_SHOT);
       if (this.weaponHeat >= 1) {
@@ -317,7 +293,7 @@ export class OnlineGame {
       const length = Math.hypot(dashX, dashY) || 1;
       const dirX = dashX / length;
       const dirY = dashY / length;
-      this.ws.send(JSON.stringify({ type: 'dash', dirX, dirY }));
+      this.sendDashMessage(dirX, dirY);
       const predictedX = Math.max(15, Math.min(this.bounds.width - 15, player.x + dirX * DASH_DISTANCE));
       const predictedY = Math.max(15, Math.min(this.bounds.height - 15, player.y + dirY * DASH_DISTANCE));
       this.recordDashTrail(this.playerId, startX, startY, predictedX, predictedY);
@@ -330,9 +306,70 @@ export class OnlineGame {
 
     const shieldActive = !!this.input.shield;
     if (shieldActive !== this.lastShieldSent) {
-      this.ws.send(JSON.stringify({ type: 'shield', active: shieldActive }));
+      this.sendShieldMessage(shieldActive);
       this.lastShieldSent = shieldActive;
     }
+  }
+
+  sendBuffer(buffer) {
+    if (!buffer) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(buffer);
+    }
+  }
+
+  sendMoveMessage(x, y, angle) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const buffer = new ArrayBuffer(1 + 12);
+    const view = new DataView(buffer);
+    view.setUint8(0, CLIENT_MESSAGE_TYPES.MOVE);
+    view.setFloat32(1, x ?? 0, true);
+    view.setFloat32(5, y ?? 0, true);
+    view.setFloat32(9, Number.isFinite(angle) ? angle : 0, true);
+    this.sendBuffer(buffer);
+  }
+
+  sendShootMessage() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const buffer = new ArrayBuffer(1);
+    new DataView(buffer).setUint8(0, CLIENT_MESSAGE_TYPES.SHOOT);
+    this.sendBuffer(buffer);
+  }
+
+  sendDashMessage(dirX, dirY) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const buffer = new ArrayBuffer(1 + 8);
+    const view = new DataView(buffer);
+    view.setUint8(0, CLIENT_MESSAGE_TYPES.DASH);
+    view.setFloat32(1, Number.isFinite(dirX) ? dirX : 0, true);
+    view.setFloat32(5, Number.isFinite(dirY) ? dirY : 0, true);
+    this.sendBuffer(buffer);
+  }
+
+  sendShieldMessage(active) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const buffer = new ArrayBuffer(2);
+    const view = new DataView(buffer);
+    view.setUint8(0, CLIENT_MESSAGE_TYPES.SHIELD);
+    view.setUint8(1, active ? 1 : 0);
+    this.sendBuffer(buffer);
+  }
+
+  sendRespawnMessage() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const buffer = new ArrayBuffer(1);
+    new DataView(buffer).setUint8(0, CLIENT_MESSAGE_TYPES.RESPAWN);
+    this.sendBuffer(buffer);
   }
 
   recordDashTrail(playerId, fromX, fromY, toX, toY) {
@@ -349,49 +386,80 @@ export class OnlineGame {
   }
 
   respawn() {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'respawn' }));
+    this.sendRespawnMessage();
+  }
+
+  handleBinaryMessage(buffer) {
+    if (!buffer) return;
+    const view = new DataView(buffer);
+    if (view.byteLength < 1) {
+      return;
+    }
+    const messageType = view.getUint8(0);
+    if (messageType === SERVER_MESSAGE_TYPES.STATE_UPDATE) {
+      const update = this.decodeStateUpdate(view, 1, buffer);
+      if (update) {
+        this.handleGameState(update);
+      }
+    } else if (messageType === SERVER_MESSAGE_TYPES.INIT) {
+      const init = this.decodeInitMessage(view, 1, buffer);
+      if (init) {
+        this.applyInitMessage(init);
+      }
+    } else if (messageType === SERVER_MESSAGE_TYPES.ERROR) {
+      const message = this.decodeErrorMessage(view, 1, buffer);
+      const text = message || 'Ошибка сервера';
+      this.ui.setStatus(text, 'error');
+      this.rejectStart(new Error(text));
     }
   }
 
-  handleBinaryUpdate(buffer) {
-    if (!buffer) return;
-    const view = new DataView(buffer);
-    if (view.byteLength < 9) {
-      return;
+  decodeStateUpdate(view, offset, buffer) {
+    if (view.byteLength < offset + 8) {
+      return null;
     }
-    let offset = 0;
-    const messageType = view.getUint8(offset);
-    offset += 1;
-    if (messageType !== 1) {
-      return;
-    }
-    const playerCount = view.getUint16(offset, true);
-    offset += 2;
-    const removedPlayerCount = view.getUint16(offset, true);
-    offset += 2;
-    const bulletCount = view.getUint16(offset, true);
-    offset += 2;
-    const removedBulletCount = view.getUint16(offset, true);
-    offset += 2;
+    let cursor = offset;
+    const playerCount = view.getUint16(cursor, true);
+    cursor += 2;
+    const removedPlayerCount = view.getUint16(cursor, true);
+    cursor += 2;
+    const bulletCount = view.getUint16(cursor, true);
+    cursor += 2;
+    const removedBulletCount = view.getUint16(cursor, true);
+    cursor += 2;
 
     const players = [];
     for (let i = 0; i < playerCount; i += 1) {
-      const flags = view.getUint8(offset);
-      offset += 1;
-      const idLength = view.getUint8(offset);
-      offset += 1;
-      const id = decodeUtf8(buffer, offset, idLength);
-      offset += idLength;
+      if (cursor + 4 > view.byteLength) {
+        return null;
+      }
+      const flags = view.getUint8(cursor);
+      cursor += 1;
+      const idLength = view.getUint8(cursor);
+      cursor += 1;
+      if (cursor + idLength > view.byteLength) {
+        return null;
+      }
+      const id = decodeUtf8(buffer, cursor, idLength);
+      cursor += idLength;
       let name;
       if (flags & 8) {
-        const nameLength = view.getUint8(offset);
-        offset += 1;
-        name = decodeUtf8(buffer, offset, nameLength);
-        offset += nameLength;
+        if (cursor + 1 > view.byteLength) {
+          return null;
+        }
+        const nameLength = view.getUint8(cursor);
+        cursor += 1;
+        if (cursor + nameLength > view.byteLength) {
+          return null;
+        }
+        name = decodeUtf8(buffer, cursor, nameLength);
+        cursor += nameLength;
       }
-      const fieldMask = view.getUint16(offset, true);
-      offset += 2;
+      if (cursor + 2 > view.byteLength) {
+        return null;
+      }
+      const fieldMask = view.getUint16(cursor, true);
+      cursor += 2;
       let x;
       let y;
       let angle;
@@ -400,30 +468,48 @@ export class OnlineGame {
       let shieldCharge;
       let dashCharge;
       if (fieldMask & PLAYER_FIELD_FLAGS.POSITION) {
-        x = view.getFloat32(offset, true);
-        offset += 4;
-        y = view.getFloat32(offset, true);
-        offset += 4;
+        if (cursor + 8 > view.byteLength) {
+          return null;
+        }
+        x = view.getFloat32(cursor, true);
+        cursor += 4;
+        y = view.getFloat32(cursor, true);
+        cursor += 4;
       }
       if (fieldMask & PLAYER_FIELD_FLAGS.ANGLE) {
-        angle = view.getFloat32(offset, true);
-        offset += 4;
+        if (cursor + 4 > view.byteLength) {
+          return null;
+        }
+        angle = view.getFloat32(cursor, true);
+        cursor += 4;
       }
       if (fieldMask & PLAYER_FIELD_FLAGS.HEALTH) {
-        health = view.getFloat32(offset, true);
-        offset += 4;
+        if (cursor + 4 > view.byteLength) {
+          return null;
+        }
+        health = view.getFloat32(cursor, true);
+        cursor += 4;
       }
       if (fieldMask & PLAYER_FIELD_FLAGS.SCORE) {
-        score = view.getFloat32(offset, true);
-        offset += 4;
+        if (cursor + 4 > view.byteLength) {
+          return null;
+        }
+        score = view.getFloat32(cursor, true);
+        cursor += 4;
       }
       if (fieldMask & PLAYER_FIELD_FLAGS.SHIELD) {
-        shieldCharge = view.getFloat32(offset, true);
-        offset += 4;
+        if (cursor + 4 > view.byteLength) {
+          return null;
+        }
+        shieldCharge = view.getFloat32(cursor, true);
+        cursor += 4;
       }
       if (fieldMask & PLAYER_FIELD_FLAGS.DASH) {
-        dashCharge = view.getFloat32(offset, true);
-        offset += 4;
+        if (cursor + 4 > view.byteLength) {
+          return null;
+        }
+        dashCharge = view.getFloat32(cursor, true);
+        cursor += 4;
       }
       players.push({
         id,
@@ -444,52 +530,187 @@ export class OnlineGame {
 
     const removedPlayers = [];
     for (let i = 0; i < removedPlayerCount; i += 1) {
-      const idLength = view.getUint8(offset);
-      offset += 1;
-      const id = decodeUtf8(buffer, offset, idLength);
-      offset += idLength;
+      if (cursor + 1 > view.byteLength) {
+        return null;
+      }
+      const idLength = view.getUint8(cursor);
+      cursor += 1;
+      if (cursor + idLength > view.byteLength) {
+        return null;
+      }
+      const id = decodeUtf8(buffer, cursor, idLength);
+      cursor += idLength;
       removedPlayers.push(id);
     }
 
     const bullets = [];
     for (let i = 0; i < bulletCount; i += 1) {
-      const flags = view.getUint8(offset);
-      offset += 1;
-      const id = view.getUint32(offset, true);
-      offset += 4;
-      const fieldMask = view.getUint8(offset);
-      offset += 1;
+      if (cursor + 6 > view.byteLength) {
+        return null;
+      }
+      const flags = view.getUint8(cursor);
+      cursor += 1;
+      const id = view.getUint32(cursor, true);
+      cursor += 4;
+      const fieldMask = view.getUint8(cursor);
+      cursor += 1;
       let x;
       let y;
       let angle;
       let owner;
       if (fieldMask & BULLET_FIELD_FLAGS.POSITION) {
-        x = view.getFloat32(offset, true);
-        offset += 4;
-        y = view.getFloat32(offset, true);
-        offset += 4;
+        if (cursor + 8 > view.byteLength) {
+          return null;
+        }
+        x = view.getFloat32(cursor, true);
+        cursor += 4;
+        y = view.getFloat32(cursor, true);
+        cursor += 4;
       }
       if (fieldMask & BULLET_FIELD_FLAGS.ANGLE) {
-        angle = view.getFloat32(offset, true);
-        offset += 4;
+        if (cursor + 4 > view.byteLength) {
+          return null;
+        }
+        angle = view.getFloat32(cursor, true);
+        cursor += 4;
       }
       if (fieldMask & BULLET_FIELD_FLAGS.OWNER) {
-        const ownerLength = view.getUint8(offset);
-        offset += 1;
-        owner = decodeUtf8(buffer, offset, ownerLength);
-        offset += ownerLength;
+        if (cursor + 1 > view.byteLength) {
+          return null;
+        }
+        const ownerLength = view.getUint8(cursor);
+        cursor += 1;
+        if (cursor + ownerLength > view.byteLength) {
+          return null;
+        }
+        owner = decodeUtf8(buffer, cursor, ownerLength);
+        cursor += ownerLength;
       }
       bullets.push({ id, x, y, angle, owner, fullSync: (flags & 1) !== 0, mask: fieldMask });
     }
 
     const removedBullets = [];
     for (let i = 0; i < removedBulletCount; i += 1) {
-      const id = view.getUint32(offset, true);
-      offset += 4;
+      if (cursor + 4 > view.byteLength) {
+        return null;
+      }
+      const id = view.getUint32(cursor, true);
+      cursor += 4;
       removedBullets.push(id);
     }
 
-    this.handleGameState({ players, removedPlayers, bullets, removedBullets });
+    return { players, removedPlayers, bullets, removedBullets };
+  }
+
+  decodeInitMessage(view, offset, buffer) {
+    if (view.byteLength < offset + 1) {
+      return null;
+    }
+    let cursor = offset;
+    const idLength = view.getUint8(cursor);
+    cursor += 1;
+    if (cursor + idLength > view.byteLength) {
+      return null;
+    }
+    const playerId = decodeUtf8(buffer, cursor, idLength);
+    cursor += idLength;
+    if (cursor + 8 > view.byteLength) {
+      return { playerId };
+    }
+    const width = view.getFloat32(cursor, true);
+    cursor += 4;
+    const height = view.getFloat32(cursor, true);
+    return { playerId, width, height };
+  }
+
+  decodeErrorMessage(view, offset, buffer) {
+    if (view.byteLength < offset + 1) {
+      return '';
+    }
+    const length = view.getUint8(offset);
+    const start = offset + 1;
+    if (start + length > view.byteLength) {
+      return '';
+    }
+    return decodeUtf8(buffer, start, length);
+  }
+
+  handleLegacyMessage(raw) {
+    if (!raw || typeof raw !== 'string') {
+      return;
+    }
+    try {
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== 'object') {
+        return;
+      }
+      if (data.type === 'init') {
+        const width = data.constants && data.constants.width;
+        const height = data.constants && data.constants.height;
+        this.applyInitMessage({ playerId: data.playerId, width, height });
+      } else if (data.type === 'gameState') {
+        const playerUpdates = Object.values(data.players || {}).map((player) => ({
+          ...player,
+          fullSync: true,
+        }));
+        const bulletUpdates = Array.isArray(data.bullets)
+          ? data.bullets.map((bullet) => ({ ...bullet, fullSync: true }))
+          : [];
+        this.handleGameState({
+          players: playerUpdates,
+          removedPlayers: [],
+          bullets: bulletUpdates,
+          removedBullets: [],
+        });
+      } else if (data.type === 'error') {
+        const message = data.message || 'Ошибка сервера';
+        this.ui.setStatus(message, 'error');
+        this.rejectStart(new Error(message));
+      }
+    } catch (error) {
+      // ignore invalid legacy payloads
+    }
+  }
+
+  applyInitMessage({ playerId, width, height }) {
+    if (playerId) {
+      this.playerId = playerId;
+    }
+    if (typeof width === 'number' && Number.isFinite(width) && width > 0) {
+      this.bounds.width = width;
+    }
+    if (typeof height === 'number' && Number.isFinite(height) && height > 0) {
+      this.bounds.height = height;
+    }
+    this.completeStart();
+  }
+
+  completeStart() {
+    this.resolveStart();
+    if (!this.running) {
+      this.running = true;
+      this.loop();
+    }
+  }
+
+  resolveStart() {
+    if (this._startHandlers && !this._startHandlers.settled) {
+      this._startHandlers.settled = true;
+      this._startHandlers.resolve();
+      this._startHandlers = null;
+      return true;
+    }
+    return false;
+  }
+
+  rejectStart(error) {
+    if (this._startHandlers && !this._startHandlers.settled) {
+      this._startHandlers.settled = true;
+      this._startHandlers.reject(error);
+      this._startHandlers = null;
+      return true;
+    }
+    return false;
   }
 
   handleGameState({ players = [], removedPlayers = [], bullets = [], removedBullets = [] }) {

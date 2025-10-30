@@ -74,6 +74,20 @@ const BULLET_FIELD_ALL =
 
 const HIGH_PRIORITY_BULLET_MASK = BULLET_FIELD_FLAGS.OWNER;
 
+const SERVER_MESSAGE_TYPES = {
+  STATE_UPDATE: 1,
+  INIT: 2,
+  ERROR: 3,
+};
+
+const CLIENT_MESSAGE_TYPES = {
+  MOVE: 1,
+  SHOOT: 2,
+  SHIELD: 3,
+  DASH: 4,
+  RESPAWN: 5,
+};
+
 function decayWeaponHeat(player) {
   if (!player) return;
   const heat = typeof player.weaponHeat === 'number' ? player.weaponHeat : 0;
@@ -205,17 +219,23 @@ class GameRoom {
     this.markPlayerDirty(player, PLAYER_FIELD_ALL, true);
     this.clients.set(playerId, ws);
     this.lastActivity = Date.now();
-    this.send(ws, {
-      type: 'init',
+    const initPayload = encodeInitMessage({
       playerId,
-      room: this.getLobbyInfo(),
-      constants: { width: GAME_WIDTH, height: GAME_HEIGHT },
+      width: GAME_WIDTH,
+      height: GAME_HEIGHT,
     });
+    try {
+      if (typeof ws.send === 'function') {
+        ws.send(initPayload, { binary: true });
+      }
+    } catch (error) {
+      // ignore send errors
+    }
     const snapshot = this.buildFullStateUpdate();
     if (snapshot.players.length || snapshot.bullets.length) {
       try {
         if (typeof ws.send === 'function') {
-          ws.send(encodeStateUpdate(snapshot), true);
+          ws.send(encodeStateUpdate(snapshot), { binary: true });
         }
       } catch (error) {
         // ignore send errors
@@ -243,23 +263,41 @@ class GameRoom {
   }
 
   handleMessage(playerId, rawMessage) {
-    let message;
-    try {
-      message = JSON.parse(rawMessage);
-    } catch (error) {
+    if (!rawMessage) {
+      return;
+    }
+
+    let buffer;
+    if (Buffer.isBuffer(rawMessage)) {
+      buffer = rawMessage;
+    } else if (rawMessage instanceof ArrayBuffer) {
+      buffer = Buffer.from(rawMessage);
+    } else if (ArrayBuffer.isView(rawMessage)) {
+      buffer = Buffer.from(rawMessage.buffer, rawMessage.byteOffset, rawMessage.byteLength);
+    } else {
+      return;
+    }
+
+    if (!buffer.length) {
       return;
     }
 
     const player = this.getPlayerById(playerId);
     if (!player) return;
 
+    const type = buffer.readUInt8(0);
     const now = Date.now();
 
-    if (message.type === 'move' && player.alive) {
+    if (type === CLIENT_MESSAGE_TYPES.MOVE) {
+      if (!player.alive || buffer.length < 13) {
+        return;
+      }
       if (player.lastMoveMessageAt && now - player.lastMoveMessageAt < MOVE_THROTTLE_MS) {
         return;
       }
-      const { x, y, angle } = message;
+      const x = buffer.readFloatLE(1);
+      const y = buffer.readFloatLE(5);
+      const angle = buffer.readFloatLE(9);
       const clampedX = clamp(x, PLAYER_RADIUS, GAME_WIDTH - PLAYER_RADIUS);
       const clampedY = clamp(y, PLAYER_RADIUS, GAME_HEIGHT - PLAYER_RADIUS);
       const deltaX = clampedX - player.x;
@@ -278,7 +316,7 @@ class GameRoom {
         player.y = clampedY;
         mask |= PLAYER_FIELD_FLAGS.POSITION;
       }
-      if (typeof angle === 'number' && Number.isFinite(angle) && player.angle !== angle) {
+      if (Number.isFinite(angle) && player.angle !== angle) {
         player.angle = angle;
         mask |= PLAYER_FIELD_FLAGS.ANGLE;
       }
@@ -287,7 +325,10 @@ class GameRoom {
         this.markPlayerDirty(player, mask);
       }
       this.lastActivity = now;
-    } else if (message.type === 'shoot' && player.alive) {
+    } else if (type === CLIENT_MESSAGE_TYPES.SHOOT) {
+      if (!player.alive) {
+        return;
+      }
       if (player.shieldActive || player.shieldRequested) {
         return;
       }
@@ -310,10 +351,13 @@ class GameRoom {
         player.weaponRecoveredAt = now + WEAPON_OVERHEAT_PENALTY_MS;
       }
       this.lastActivity = now;
-    } else if (message.type === 'respawn' && !player.alive) {
-      this.respawnPlayer(playerId);
-    } else if (message.type === 'shield') {
-      const requested = !!message.active && player.alive;
+    } else if (type === CLIENT_MESSAGE_TYPES.RESPAWN) {
+      if (!player.alive) {
+        this.respawnPlayer(playerId);
+        this.lastActivity = now;
+      }
+    } else if (type === CLIENT_MESSAGE_TYPES.SHIELD) {
+      const requested = player.alive && buffer.length >= 2 && buffer.readUInt8(1) !== 0;
       if (player.shieldRequested !== requested) {
         player.shieldRequested = requested;
       }
@@ -322,40 +366,42 @@ class GameRoom {
         this.markPlayerDirty(player, PLAYER_FIELD_FLAGS.STATUS);
       }
       this.lastActivity = now;
-    } else if (message.type === 'dash' && player.alive) {
-      if (player.dashCharge >= 1) {
-        const dirX = typeof message.dirX === 'number' ? message.dirX : 0;
-        const dirY = typeof message.dirY === 'number' ? message.dirY : 0;
-        let baseX = dirX;
-        let baseY = dirY;
-        if (!baseX && !baseY) {
-          baseX = player.lastMoveDirection.x || Math.cos(player.angle);
-          baseY = player.lastMoveDirection.y || Math.sin(player.angle);
-        }
-        const length = Math.hypot(baseX, baseY) || 1;
-        const normX = baseX / length;
-        const normY = baseY / length;
-        const targetX = clamp(player.x + normX * DASH_DISTANCE, PLAYER_RADIUS, GAME_WIDTH - PLAYER_RADIUS);
-        const targetY = clamp(player.y + normY * DASH_DISTANCE, PLAYER_RADIUS, GAME_HEIGHT - PLAYER_RADIUS);
-        let mask = 0;
-        if (player.x !== targetX) {
-          player.x = targetX;
-          mask |= PLAYER_FIELD_FLAGS.POSITION;
-        }
-        if (player.y !== targetY) {
-          player.y = targetY;
-          mask |= PLAYER_FIELD_FLAGS.POSITION;
-        }
-        const nextCharge = Math.max(0, player.dashCharge - 1);
-        if (nextCharge !== player.dashCharge) {
-          player.dashCharge = nextCharge;
-          mask |= PLAYER_FIELD_FLAGS.DASH;
-        }
-        player.lastMoveDirection.x = normX;
-        player.lastMoveDirection.y = normY;
-        if (mask) {
-          this.markPlayerDirty(player, mask);
-        }
+    } else if (type === CLIENT_MESSAGE_TYPES.DASH) {
+      if (!player.alive || player.dashCharge < 1 || buffer.length < 9) {
+        this.lastActivity = now;
+        return;
+      }
+      const dirX = buffer.readFloatLE(1);
+      const dirY = buffer.readFloatLE(5);
+      let baseX = Number.isFinite(dirX) ? dirX : 0;
+      let baseY = Number.isFinite(dirY) ? dirY : 0;
+      if (!baseX && !baseY) {
+        baseX = player.lastMoveDirection.x || Math.cos(player.angle);
+        baseY = player.lastMoveDirection.y || Math.sin(player.angle);
+      }
+      const length = Math.hypot(baseX, baseY) || 1;
+      const normX = baseX / length;
+      const normY = baseY / length;
+      const targetX = clamp(player.x + normX * DASH_DISTANCE, PLAYER_RADIUS, GAME_WIDTH - PLAYER_RADIUS);
+      const targetY = clamp(player.y + normY * DASH_DISTANCE, PLAYER_RADIUS, GAME_HEIGHT - PLAYER_RADIUS);
+      let mask = 0;
+      if (player.x !== targetX) {
+        player.x = targetX;
+        mask |= PLAYER_FIELD_FLAGS.POSITION;
+      }
+      if (player.y !== targetY) {
+        player.y = targetY;
+        mask |= PLAYER_FIELD_FLAGS.POSITION;
+      }
+      const nextCharge = Math.max(0, player.dashCharge - 1);
+      if (nextCharge !== player.dashCharge) {
+        player.dashCharge = nextCharge;
+        mask |= PLAYER_FIELD_FLAGS.DASH;
+      }
+      player.lastMoveDirection.x = normX;
+      player.lastMoveDirection.y = normY;
+      if (mask) {
+        this.markPlayerDirty(player, mask);
       }
       this.lastActivity = now;
     }
@@ -659,7 +705,7 @@ class GameRoom {
         return;
       }
       try {
-        ws.send(payload, true);
+        ws.send(payload, { binary: true });
       } catch (error) {
         // ignore send errors
       }
@@ -963,6 +1009,25 @@ function resetBulletTemplate(bullet) {
   bullet.dirtyMask = 0;
 }
 
+function encodeInitMessage({ playerId, width = GAME_WIDTH, height = GAME_HEIGHT }) {
+  const id = playerId || '';
+  const idLength = byteLength(id);
+  const size = 1 + 1 + idLength + 4 + 4;
+  const buffer = Buffer.allocUnsafe(size);
+  let offset = 0;
+  buffer.writeUInt8(SERVER_MESSAGE_TYPES.INIT, offset);
+  offset += 1;
+  buffer.writeUInt8(idLength & 0xff, offset);
+  offset += 1;
+  if (idLength) {
+    offset += buffer.write(id, offset, idLength, 'utf8');
+  }
+  buffer.writeFloatLE(width ?? GAME_WIDTH, offset);
+  offset += 4;
+  buffer.writeFloatLE(height ?? GAME_HEIGHT, offset);
+  return buffer;
+}
+
 function encodeStateUpdate({ players, removedPlayers, bullets, removedBullets }) {
   const headerSize = 1 + 2 * 4;
   let size = headerSize;
@@ -1024,7 +1089,7 @@ function encodeStateUpdate({ players, removedPlayers, bullets, removedBullets })
 
   const buffer = Buffer.allocUnsafe(size);
   let offset = 0;
-  buffer.writeUInt8(1, offset);
+  buffer.writeUInt8(SERVER_MESSAGE_TYPES.STATE_UPDATE, offset);
   offset += 1;
   buffer.writeUInt16LE(players.length, offset);
   offset += 2;
