@@ -5,6 +5,10 @@ const BULLET_RADIUS = 4;
 const MOVE_SPEED = 4.2;
 const BULLET_SPEED = 9;
 const DAMAGE = 22;
+const BULLET_POOL_BASE_SIZE = 96;
+const BULLET_POOL_GROW_STEP = 24;
+const BULLET_POOL_GROW_RATIO = 0.5;
+const BULLET_POOL_INTERMISSION_FACTOR = 1.1;
 const SHIELD_MAX_CHARGE = 3334;
 const SHIELD_RECHARGE_FACTOR = 0.5;
 const SHIELD_ARC = Math.PI * 0.9;
@@ -93,6 +97,11 @@ export class OfflineGame {
     this.ui = ui;
     this.players = {};
     this.bullets = [];
+    this.bulletPool = [];
+    this.bulletPoolCapacity = 0;
+    this.peakBulletCount = 0;
+    this.nextBulletId = 1;
+    this.initializeBulletPool();
     this.running = false;
     this.animationId = null;
     this.settings = BOT_DIFFICULTY.normal;
@@ -118,6 +127,9 @@ export class OfflineGame {
       cancelAnimationFrame(this.animationId);
       this.animationId = null;
     }
+    this.clearActiveBullets();
+    this.adjustBulletPoolBetweenMatches();
+    this.bullets = [];
   }
 
   respawn() {
@@ -130,6 +142,8 @@ export class OfflineGame {
   }
 
   resetState() {
+    this.clearActiveBullets();
+    this.adjustBulletPoolBetweenMatches();
     this.players = {
       player: {
         id: 'player',
@@ -167,6 +181,7 @@ export class OfflineGame {
       },
     };
     this.bullets = [];
+    this.nextBulletId = 1;
     this.lastShotAt = 0;
     this.botShotAt = 0;
     this.dashTrails = [];
@@ -177,6 +192,92 @@ export class OfflineGame {
       { id: 'bot', name: 'SYNTH', score: 0, isSelf: false },
     ]);
     this.ui.setStatus('Бой начался', 'success');
+  }
+
+  initializeBulletPool() {
+    this.bulletPool = [];
+    this.bulletPoolCapacity = 0;
+    this.expandBulletPool(BULLET_POOL_BASE_SIZE);
+  }
+
+  clearActiveBullets() {
+    if (!this.bullets || !this.bullets.length) {
+      return;
+    }
+    this.bullets.forEach((bullet) => {
+      if (bullet) {
+        this.releaseBullet(bullet);
+      }
+    });
+  }
+
+  createBullet() {
+    return {
+      id: 0,
+      x: 0,
+      y: 0,
+      angle: 0,
+      owner: '',
+      reflected: false,
+      active: false,
+    };
+  }
+
+  acquireBullet() {
+    if (!this.bulletPool.length) {
+      const growBy = Math.max(
+        BULLET_POOL_GROW_STEP,
+        Math.ceil(this.bulletPoolCapacity * BULLET_POOL_GROW_RATIO)
+      );
+      this.expandBulletPool(growBy || BULLET_POOL_GROW_STEP);
+    }
+    return this.bulletPool.pop();
+  }
+
+  releaseBullet(bullet) {
+    if (!bullet || !bullet.active) {
+      return;
+    }
+    bullet.id = 0;
+    bullet.x = 0;
+    bullet.y = 0;
+    bullet.angle = 0;
+    bullet.owner = '';
+    bullet.reflected = false;
+    bullet.active = false;
+    this.bulletPool.push(bullet);
+  }
+
+  expandBulletPool(amount) {
+    const count = Math.max(0, Math.ceil(amount));
+    if (!count) {
+      return;
+    }
+    for (let i = 0; i < count; i += 1) {
+      this.bulletPool.push(this.createBullet());
+    }
+    this.bulletPoolCapacity += count;
+  }
+
+  shrinkBulletPool(targetSize = BULLET_POOL_BASE_SIZE) {
+    const desiredSize = Math.max(BULLET_POOL_BASE_SIZE, targetSize);
+    if (this.bulletPoolCapacity <= desiredSize) {
+      if (this.bulletPoolCapacity < desiredSize) {
+        this.expandBulletPool(desiredSize - this.bulletPoolCapacity);
+      }
+      return;
+    }
+    const newLength = Math.min(desiredSize, this.bulletPool.length);
+    this.bulletPool.splice(newLength);
+    this.bulletPoolCapacity = this.bulletPool.length;
+  }
+
+  adjustBulletPoolBetweenMatches() {
+    const usageTarget = Math.ceil(this.peakBulletCount * BULLET_POOL_INTERMISSION_FACTOR);
+    const desiredSize = Math.max(BULLET_POOL_BASE_SIZE, usageTarget);
+    const clampedSize = Math.min(desiredSize, this.bulletPoolCapacity);
+    this.shrinkBulletPool(clampedSize);
+    this.peakBulletCount = 0;
   }
 
   spawnPlayer(player) {
@@ -397,14 +498,18 @@ export class OfflineGame {
   spawnBullet(shooter, accuracy = 1) {
     const spread = (1 - accuracy) * (Math.PI / 12);
     const angle = shooter.angle + (Math.random() - 0.5) * spread;
-    this.bullets.push({
-      id: Math.random().toString(16).slice(2),
-      x: shooter.x,
-      y: shooter.y,
-      angle,
-      owner: shooter.id,
-      reflected: false,
-    });
+    const bullet = this.acquireBullet();
+    bullet.id = this.nextBulletId++;
+    bullet.x = shooter.x;
+    bullet.y = shooter.y;
+    bullet.angle = angle;
+    bullet.owner = shooter.id;
+    bullet.reflected = false;
+    bullet.active = true;
+    this.bullets.push(bullet);
+    if (this.bullets.length > this.peakBulletCount) {
+      this.peakBulletCount = this.bullets.length;
+    }
   }
 
   updateBullets() {
@@ -412,6 +517,7 @@ export class OfflineGame {
       bullet.x += Math.cos(bullet.angle) * BULLET_SPEED;
       bullet.y += Math.sin(bullet.angle) * BULLET_SPEED;
       if (bullet.x < 0 || bullet.y < 0 || bullet.x > GAME_WIDTH || bullet.y > GAME_HEIGHT) {
+        this.releaseBullet(bullet);
         return false;
       }
       const targets = bullet.owner === 'player' ? ['bot'] : ['player'];
@@ -459,6 +565,7 @@ export class OfflineGame {
               this.ui.setStatus('Синтетик повержен', 'success');
             }
           }
+          this.releaseBullet(bullet);
           return false;
         }
       }
