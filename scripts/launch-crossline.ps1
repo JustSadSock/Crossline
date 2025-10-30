@@ -69,25 +69,43 @@ function Get-PackageManifest {
 function Get-RequiredPackageNames {
     param(
         [Parameter(Mandatory = $true)]
-        [pscustomobject]$Manifest
+        [object]$Manifest
     )
 
     $names = New-Object System.Collections.Generic.List[string]
+    $sections = @('dependencies', 'devDependencies')
 
-    foreach ($section in @('dependencies', 'devDependencies')) {
-        if ($Manifest.PSObject.Properties.Name -contains $section) {
+    foreach ($section in $sections) {
+        $dependencies = $null
+
+        if ($Manifest -is [System.Collections.IDictionary]) {
+            if ($Manifest.Contains($section)) {
+                $dependencies = $Manifest[$section]
+            }
+        } elseif ($Manifest.PSObject -and $Manifest.PSObject.Properties.Name -contains $section) {
             $dependencies = $Manifest.$section
-            if ($dependencies) {
-                foreach ($property in $dependencies.PSObject.Properties) {
-                    if ($property.Name) {
-                        $names.Add($property.Name)
-                    }
+        }
+
+        if (-not $dependencies) {
+            continue
+        }
+
+        if ($dependencies -is [System.Collections.IDictionary]) {
+            foreach ($key in $dependencies.Keys) {
+                if ($key -and -not $names.Contains([string]$key)) {
+                    [void]$names.Add([string]$key)
+                }
+            }
+        } elseif ($dependencies.PSObject) {
+            foreach ($property in $dependencies.PSObject.Properties) {
+                if ($property.Name -and -not $names.Contains([string]$property.Name)) {
+                    [void]$names.Add([string]$property.Name)
                 }
             }
         }
     }
 
-    return $names
+    return $names.ToArray()
 }
 
 function Test-PackageInstalled {
@@ -112,19 +130,23 @@ function Get-MissingPackages {
         [Parameter(Mandatory = $true)]
         [string]$ModulesRoot,
         [Parameter(Mandatory = $true)]
-        [pscustomobject]$Manifest
+        [object]$Manifest
     )
 
     $missing = New-Object System.Collections.Generic.List[string]
     $requiredPackages = Get-RequiredPackageNames -Manifest $Manifest
 
     foreach ($package in $requiredPackages) {
+        if ([string]::IsNullOrWhiteSpace($package)) {
+            continue
+        }
+
         if (-not (Test-PackageInstalled -ModulesRoot $ModulesRoot -PackageName $package)) {
             $missing.Add($package)
         }
     }
 
-    return ,($missing.ToArray())
+    return $missing.ToArray()
 }
 
 Require-Command -Name 'node' -FriendlyName 'Node.js'
@@ -152,12 +174,22 @@ if (-not (Test-Path -Path $nodeModules)) {
     $shouldInstall = $true
     $installReason = 'node_modules directory is missing'
 } elseif ($manifest) {
-    $missingPackages = Get-MissingPackages -ModulesRoot $nodeModules -Manifest $manifest
-    $missingCount = @($missingPackages).Count
-    if ($missingCount -gt 0) {
+    try {
+        $missingPackages = @(Get-MissingPackages -ModulesRoot $nodeModules -Manifest $manifest)
+        $missingCount = $missingPackages.Count
+        if ($missingCount -gt 0) {
+            $shouldInstall = $true
+            $installReason = "missing packages: $($missingPackages -join ', ')"
+        }
+    } catch {
         $shouldInstall = $true
-        $missingList = @($missingPackages)
-        $installReason = "missing packages: $($missingList -join ', ')"
+        $scanMessage = $_.Exception.Message
+        if (-not [string]::IsNullOrWhiteSpace($scanMessage)) {
+            $installReason = "dependency scan failed: $scanMessage"
+        } else {
+            $installReason = 'dependency scan failed'
+        }
+        Write-Warning "Falling back to npm ci because node_modules could not be scanned: $installReason"
     }
 }
 
