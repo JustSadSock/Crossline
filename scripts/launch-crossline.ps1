@@ -45,6 +45,88 @@ function Resolve-Ngrok {
     throw 'ngrok was not found. Install it, add it to PATH, or set NGROK_EXE.'
 }
 
+function Get-PackageManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectDir
+    )
+
+    $packagePath = Join-Path -Path $ProjectDir -ChildPath 'package.json'
+    if (-not (Test-Path -Path $packagePath)) {
+        Write-Warning "package.json was not found in $ProjectDir"
+        return $null
+    }
+
+    try {
+        $raw = Get-Content -Path $packagePath -Raw -ErrorAction Stop
+        return $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Warning "Failed to parse package.json: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-RequiredPackageNames {
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$Manifest
+    )
+
+    $names = New-Object System.Collections.Generic.List[string]
+
+    foreach ($section in @('dependencies', 'devDependencies')) {
+        if ($Manifest.PSObject.Properties.Name -contains $section) {
+            $dependencies = $Manifest.$section
+            if ($dependencies) {
+                foreach ($property in $dependencies.PSObject.Properties) {
+                    if ($property.Name) {
+                        $names.Add($property.Name)
+                    }
+                }
+            }
+        }
+    }
+
+    return $names
+}
+
+function Test-PackageInstalled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ModulesRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName
+    )
+
+    $segments = $PackageName -split '/'
+    $candidate = $ModulesRoot
+    foreach ($segment in $segments) {
+        $candidate = Join-Path -Path $candidate -ChildPath $segment
+    }
+
+    return Test-Path -Path $candidate
+}
+
+function Get-MissingPackages {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ModulesRoot,
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$Manifest
+    )
+
+    $missing = New-Object System.Collections.Generic.List[string]
+    $requiredPackages = Get-RequiredPackageNames -Manifest $Manifest
+
+    foreach ($package in $requiredPackages) {
+        if (-not (Test-PackageInstalled -ModulesRoot $ModulesRoot -PackageName $package)) {
+            $missing.Add($package)
+        }
+    }
+
+    return $missing
+}
+
 Require-Command -Name 'node' -FriendlyName 'Node.js'
 Require-Command -Name 'npm'
 $ngrokExe = Resolve-Ngrok
@@ -62,8 +144,27 @@ if ($env:NGROK_AUTHTOKEN) {
 }
 
 $nodeModules = Join-Path -Path $resolvedProjectDir -ChildPath 'node_modules'
+$manifest = Get-PackageManifest -ProjectDir $resolvedProjectDir
+$shouldInstall = $false
+$installReason = ''
+
 if (-not (Test-Path -Path $nodeModules)) {
-    Write-Host '[STEP] Installing dependencies (npm ci)...'
+    $shouldInstall = $true
+    $installReason = 'node_modules directory is missing'
+} elseif ($manifest) {
+    $missingPackages = Get-MissingPackages -ModulesRoot $nodeModules -Manifest $manifest
+    if ($missingPackages.Count -gt 0) {
+        $shouldInstall = $true
+        $installReason = "missing packages: $($missingPackages -join ', ')"
+    }
+}
+
+if ($shouldInstall) {
+    if ($installReason) {
+        Write-Host "[STEP] Installing dependencies (npm ci) - $installReason..."
+    } else {
+        Write-Host '[STEP] Installing dependencies (npm ci)...'
+    }
     Push-Location -Path $resolvedProjectDir
     try {
         & npm ci
@@ -74,7 +175,7 @@ if (-not (Test-Path -Path $nodeModules)) {
         Pop-Location
     }
 } else {
-    Write-Host '[INFO] node_modules found. Skipping npm ci.'
+    Write-Host '[INFO] All npm dependencies are installed. Skipping npm ci.'
 }
 
 $env:PORT = "$Port"

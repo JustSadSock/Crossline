@@ -92,11 +92,11 @@ function startServer() {
       completed = true;
       const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
       const statusCode = typeof res.statusCode === 'number' ? res.statusCode : Number(res.statusCode) || 0;
-      monitoring.trackRequest(statusCode);
+      monitoring.trackRequest(requestMeta.method, statusCode, durationMs);
       logger.info({ ...requestMeta, statusCode, durationMs }, 'http request');
     };
     const logError = (error) => {
-      monitoring.trackError();
+      monitoring.trackError('http');
       logger.error({ ...requestMeta, err: error }, 'http request error');
     };
 
@@ -149,6 +149,21 @@ function startServer() {
           metrics: monitoring.snapshot(),
         }),
       );
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/metrics') {
+      try {
+        const payload = await monitoring.collect();
+        res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+        res.writeHead(200);
+        res.end(payload);
+      } catch (error) {
+        logError(error);
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.writeHead(503);
+        res.end('Не удалось собрать метрики');
+      }
       return;
     }
 
@@ -246,7 +261,7 @@ function startServer() {
       if (pingState.timer) {
         clearInterval(pingState.timer);
       }
-      monitoring.trackError();
+      monitoring.trackError('websocket');
       connectionLog.error({ err: error, playerId }, 'websocket error');
       room.detachClient(playerId);
     });
@@ -334,7 +349,7 @@ function startServer() {
 }
 
 function logIssue(context, error) {
-  monitoring.trackError();
+  monitoring.trackError('server');
   if (error instanceof Error) {
     logger.error({ err: error }, context);
   } else {
