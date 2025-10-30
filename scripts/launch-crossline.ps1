@@ -45,6 +45,110 @@ function Resolve-Ngrok {
     throw 'ngrok was not found. Install it, add it to PATH, or set NGROK_EXE.'
 }
 
+function Get-PackageManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectDir
+    )
+
+    $packagePath = Join-Path -Path $ProjectDir -ChildPath 'package.json'
+    if (-not (Test-Path -Path $packagePath)) {
+        Write-Warning "package.json was not found in $ProjectDir"
+        return $null
+    }
+
+    try {
+        $raw = Get-Content -Path $packagePath -Raw -ErrorAction Stop
+        return $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Warning "Failed to parse package.json: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-RequiredPackageNames {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Manifest
+    )
+
+    $names = New-Object System.Collections.Generic.List[string]
+    $sections = @('dependencies', 'devDependencies')
+
+    foreach ($section in $sections) {
+        $dependencies = $null
+
+        if ($Manifest -is [System.Collections.IDictionary]) {
+            if ($Manifest.Contains($section)) {
+                $dependencies = $Manifest[$section]
+            }
+        } elseif ($Manifest.PSObject -and $Manifest.PSObject.Properties.Name -contains $section) {
+            $dependencies = $Manifest.$section
+        }
+
+        if (-not $dependencies) {
+            continue
+        }
+
+        if ($dependencies -is [System.Collections.IDictionary]) {
+            foreach ($key in $dependencies.Keys) {
+                if ($key -and -not $names.Contains([string]$key)) {
+                    [void]$names.Add([string]$key)
+                }
+            }
+        } elseif ($dependencies.PSObject) {
+            foreach ($property in $dependencies.PSObject.Properties) {
+                if ($property.Name -and -not $names.Contains([string]$property.Name)) {
+                    [void]$names.Add([string]$property.Name)
+                }
+            }
+        }
+    }
+
+    return $names.ToArray()
+}
+
+function Test-PackageInstalled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ModulesRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName
+    )
+
+    $segments = $PackageName -split '/'
+    $candidate = $ModulesRoot
+    foreach ($segment in $segments) {
+        $candidate = Join-Path -Path $candidate -ChildPath $segment
+    }
+
+    return Test-Path -Path $candidate
+}
+
+function Get-MissingPackages {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ModulesRoot,
+        [Parameter(Mandatory = $true)]
+        [object]$Manifest
+    )
+
+    $missing = New-Object System.Collections.Generic.List[string]
+    $requiredPackages = Get-RequiredPackageNames -Manifest $Manifest
+
+    foreach ($package in $requiredPackages) {
+        if ([string]::IsNullOrWhiteSpace($package)) {
+            continue
+        }
+
+        if (-not (Test-PackageInstalled -ModulesRoot $ModulesRoot -PackageName $package)) {
+            $missing.Add($package)
+        }
+    }
+
+    return $missing.ToArray()
+}
+
 Require-Command -Name 'node' -FriendlyName 'Node.js'
 Require-Command -Name 'npm'
 $ngrokExe = Resolve-Ngrok
@@ -62,8 +166,39 @@ if ($env:NGROK_AUTHTOKEN) {
 }
 
 $nodeModules = Join-Path -Path $resolvedProjectDir -ChildPath 'node_modules'
+$manifest = Get-PackageManifest -ProjectDir $resolvedProjectDir
+$shouldInstall = $false
+$installReason = ''
+
 if (-not (Test-Path -Path $nodeModules)) {
-    Write-Host '[STEP] Installing dependencies (npm ci)...'
+    $shouldInstall = $true
+    $installReason = 'node_modules directory is missing'
+} elseif ($manifest) {
+    try {
+        $missingPackages = @(Get-MissingPackages -ModulesRoot $nodeModules -Manifest $manifest)
+        $missingCount = $missingPackages.Count
+        if ($missingCount -gt 0) {
+            $shouldInstall = $true
+            $installReason = "missing packages: $($missingPackages -join ', ')"
+        }
+    } catch {
+        $shouldInstall = $true
+        $scanMessage = $_.Exception.Message
+        if (-not [string]::IsNullOrWhiteSpace($scanMessage)) {
+            $installReason = "dependency scan failed: $scanMessage"
+        } else {
+            $installReason = 'dependency scan failed'
+        }
+        Write-Warning "Falling back to npm ci because node_modules could not be scanned: $installReason"
+    }
+}
+
+if ($shouldInstall) {
+    if ($installReason) {
+        Write-Host "[STEP] Installing dependencies (npm ci) - $installReason..."
+    } else {
+        Write-Host '[STEP] Installing dependencies (npm ci)...'
+    }
     Push-Location -Path $resolvedProjectDir
     try {
         & npm ci
@@ -74,7 +209,7 @@ if (-not (Test-Path -Path $nodeModules)) {
         Pop-Location
     }
 } else {
-    Write-Host '[INFO] node_modules found. Skipping npm ci.'
+    Write-Host '[INFO] All npm dependencies are installed. Skipping npm ci.'
 }
 
 $env:PORT = "$Port"

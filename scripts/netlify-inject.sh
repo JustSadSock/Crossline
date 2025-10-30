@@ -10,8 +10,14 @@ escape_replacement() {
 }
 
 if [[ -z "${CROSSLINE_API_URL-}" ]]; then
-  echo "CROSSLINE_API_URL must be set for Netlify builds" >&2
-  exit 1
+  if [[ -n "${CROSSLINE_API_URL_DEFAULT-}" ]]; then
+    CROSSLINE_API_URL="$CROSSLINE_API_URL_DEFAULT"
+    echo "[WARN] CROSSLINE_API_URL not provided; using CROSSLINE_API_URL_DEFAULT=$CROSSLINE_API_URL" >&2
+  else
+    CROSSLINE_API_URL="https://api.example.com"
+    echo "[WARN] CROSSLINE_API_URL not provided; using fallback $CROSSLINE_API_URL" >&2
+    echo "        Configure CROSSLINE_API_URL in Netlify to target your backend." >&2
+  fi
 fi
 
 ws_origin="${CROSSLINE_WS_URL-}"

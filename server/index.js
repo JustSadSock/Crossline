@@ -92,11 +92,11 @@ function startServer() {
       completed = true;
       const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
       const statusCode = typeof res.statusCode === 'number' ? res.statusCode : Number(res.statusCode) || 0;
-      monitoring.trackRequest(statusCode);
+      monitoring.trackRequest(requestMeta.method, statusCode, durationMs);
       logger.info({ ...requestMeta, statusCode, durationMs }, 'http request');
     };
     const logError = (error) => {
-      monitoring.trackError();
+      monitoring.trackError('http');
       logger.error({ ...requestMeta, err: error }, 'http request error');
     };
 
@@ -152,6 +152,21 @@ function startServer() {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/metrics') {
+      try {
+        const payload = await monitoring.collect();
+        res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+        res.writeHead(200);
+        res.end(payload);
+      } catch (error) {
+        logError(error);
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.writeHead(503);
+        res.end('Не удалось собрать метрики');
+      }
+      return;
+    }
+
     serveStatic(url.pathname, res);
   });
 
@@ -182,18 +197,18 @@ function startServer() {
     });
 
     if (!roomId) {
-      sendAndClose(ws, { type: 'error', message: 'Комната не указана' }, 1008);
+      sendAndClose(ws, 'Комната не указана', 1008);
       return;
     }
 
     const room = getRoom(roomId);
     if (!room) {
-      sendAndClose(ws, { type: 'error', message: 'Комната не найдена' }, 1008);
+      sendAndClose(ws, 'Комната не найдена', 1008);
       return;
     }
 
     if (room.isFull()) {
-      sendAndClose(ws, { type: 'error', message: 'Комната заполнена' }, 1008);
+      sendAndClose(ws, 'Комната заполнена', 1008);
       return;
     }
 
@@ -204,7 +219,7 @@ function startServer() {
       connectionLog.info({ playerId }, 'websocket client attached');
     } catch (error) {
       connectionLog.error({ err: error }, 'websocket attach error');
-      sendAndClose(ws, { type: 'error', message: 'Не удалось присоединиться' }, 1011);
+      sendAndClose(ws, 'Не удалось присоединиться', 1011);
       return;
     }
 
@@ -246,7 +261,7 @@ function startServer() {
       if (pingState.timer) {
         clearInterval(pingState.timer);
       }
-      monitoring.trackError();
+      monitoring.trackError('websocket');
       connectionLog.error({ err: error, playerId }, 'websocket error');
       room.detachClient(playerId);
     });
@@ -334,7 +349,7 @@ function startServer() {
 }
 
 function logIssue(context, error) {
-  monitoring.trackError();
+  monitoring.trackError('server');
   if (error instanceof Error) {
     logger.error({ err: error }, context);
   } else {
@@ -450,15 +465,31 @@ function sanitizeName(value) {
     .slice(0, 20);
 }
 
-function sendAndClose(ws, payload, code = 1000) {
+function sendAndClose(ws, message, code = 1000) {
   try {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
+      const payload = encodeErrorMessage(typeof message === 'string' ? message : 'Ошибка');
+      ws.send(payload, { binary: true });
     }
     ws.close(code);
   } catch (error) {
     // ignore
   }
+}
+
+function encodeErrorMessage(message) {
+  const text = message || '';
+  const length = Math.min(255, Buffer.byteLength(text, 'utf8'));
+  const buffer = Buffer.allocUnsafe(2 + length);
+  let offset = 0;
+  buffer.writeUInt8(3, offset);
+  offset += 1;
+  buffer.writeUInt8(length & 0xff, offset);
+  offset += 1;
+  if (length) {
+    buffer.write(text, offset, length, 'utf8');
+  }
+  return buffer;
 }
 
 function parsePort(value, fallback) {
