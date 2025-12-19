@@ -52,7 +52,8 @@ if exist "%SCRIPT_DIR%\node_modules" (
 echo.
 rem ===== START LOCAL SERVER =====
 echo [STEP] Запуск игрового сервера на http://localhost:%PORT% ...
-start "Crossline Server" cmd /k "cd /d \"%SCRIPT_DIR%\" && set PORT=%PORT% && node server\index.js"
+set "SERVER_CMD=cd /d \"%SCRIPT_DIR%\" && set PORT=%PORT% && node server\index.js"
+start "Crossline Server" cmd /k "%SERVER_CMD% || (echo [ERROR] Сервер завершился с ошибкой ^&^& pause)"
 if errorlevel 1 (
   echo [ERROR] Не удалось запустить серверное окно.
   goto :FAIL
@@ -64,7 +65,8 @@ timeout /t 3 /nobreak >nul
 echo.
 rem ===== START CLOUDFLARE TUNNEL =====
 echo [STEP] Запуск Cloudflare Tunnel (irgri-tunnel)...
-start "Crossline Tunnel" cmd /k "cd /d \"%SCRIPT_DIR%\" && %CLOUDFLARED_CMD% tunnel run irgri-tunnel"
+set "TUNNEL_CMD=cd /d \"%SCRIPT_DIR%\" && %CLOUDFLARED_CMD% tunnel run irgri-tunnel"
+start "Crossline Tunnel" cmd /k "%TUNNEL_CMD% || (echo [ERROR] Cloudflared завершился с ошибкой ^&^& pause)"
 if errorlevel 1 (
   echo [ERROR] Не удалось запустить cloudflared.
   goto :FAIL
