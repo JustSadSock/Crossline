@@ -2,7 +2,7 @@
 setlocal
 enableextensions
 chcp 65001 >nul 2>&1
-set "ROOT=%~dp0"
+for %%I in ("%~dp0.") do set "ROOT=%%~fI"
 cd /d "%ROOT%"
 
 rem ===== CONFIGURATION =====
@@ -64,11 +64,14 @@ set "WRAPPER=%TEMP%\crossline_launch_!RANDOM!.cmd"
 (
   echo @echo off
   echo chcp 65001 ^>nul 2^>^&1
+  echo title !WINDOW_TITLE!
+  echo echo [RUN] !WINDOW_TITLE!
+  echo echo -------------------------------
   echo cd /d "%ROOT%"
   echo %RUN_COMMAND%
   echo if errorlevel 1 ^(
   echo   echo.
-  echo   echo [ERROR] !ERROR_MESSAGE! (код ^!errorlevel^!)
+  echo   echo [ERROR] !ERROR_MESSAGE! ^(код ^!errorlevel^!^)
   echo   pause
   echo ^)
 ) > "!WRAPPER!"
