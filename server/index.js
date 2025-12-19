@@ -23,9 +23,11 @@ const STATIC_DIRS = new Set(['styles', 'scripts', 'assets']);
 const PING_INTERVAL_MS = Math.max(5000, parseInt(process.env.CROSSLINE_PING_INTERVAL_MS, 10) || 15000);
 const SECURITY_CONFIG = config.security;
 const CORS_ALLOWED_ORIGINS = SECURITY_CONFIG.cors.allowedOrigins;
+const CORS_ALLOWED_SUFFIXES = SECURITY_CONFIG.cors.allowedOriginSuffixes;
 const CORS_ALLOW_SAME_HOST = SECURITY_CONFIG.cors.allowSameHost;
 const CORS_ALLOW_ANY = SECURITY_CONFIG.cors.allowAny;
 const WS_ALLOWED_ORIGINS = SECURITY_CONFIG.websocket.allowedOrigins;
+const WS_ALLOWED_SUFFIXES = SECURITY_CONFIG.websocket.allowedOriginSuffixes;
 const WS_ALLOW_SAME_HOST = SECURITY_CONFIG.websocket.allowSameHost;
 const WS_ALLOW_ANY = SECURITY_CONFIG.websocket.allowAny;
 const MAX_BODY_BYTES = SECURITY_CONFIG.http.maxBodyBytes;
@@ -534,7 +536,7 @@ function applyCors(req, res) {
   } else if (originHeader) {
     appendVaryHeader(res, 'Origin');
     const isAllowed =
-      (hasAllowedOrigins && isOriginExplicitlyAllowed(originHeader)) ||
+      (hasAllowedOrigins && isOriginExplicitlyAllowed(originHeader, CORS_ALLOWED_ORIGINS, CORS_ALLOWED_SUFFIXES)) ||
       (CORS_ALLOW_SAME_HOST && isSameHostOrigin(originHeader, req.headers));
 
     if (!isAllowed) {
@@ -555,7 +557,7 @@ function applyCors(req, res) {
   }
 
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Credentials', 'false');
 
   if (req.method === 'OPTIONS') {
@@ -587,12 +589,31 @@ function appendVaryHeader(res, value) {
 }
 
 // cluster configuration is resolved centrally in server/config.js
-function isOriginExplicitlyAllowed(origin) {
+function isOriginExplicitlyAllowed(origin, allowedOrigins, allowedSuffixes) {
   if (!origin) {
     return false;
   }
 
-  return CORS_ALLOWED_ORIGINS.has(origin.toLowerCase());
+  if (allowedOrigins.has(origin.toLowerCase())) {
+    return true;
+  }
+
+  if (!(allowedSuffixes && allowedSuffixes.size)) {
+    return false;
+  }
+
+  try {
+    const host = new URL(origin).host.toLowerCase();
+    for (const suffix of allowedSuffixes) {
+      if (host.endsWith(suffix)) {
+        return true;
+      }
+    }
+  } catch (error) {
+    // ignore parsing errors; treat as not allowed
+  }
+
+  return false;
 }
 
 function isSameHostOrigin(origin, headers) {
@@ -624,7 +645,10 @@ function allowWebSocketConnection(info) {
     return true;
   }
 
-  if (WS_ALLOWED_ORIGINS.size > 0 && WS_ALLOWED_ORIGINS.has(origin.toLowerCase())) {
+  if (
+    WS_ALLOWED_ORIGINS.size > 0 &&
+    isOriginExplicitlyAllowed(origin, WS_ALLOWED_ORIGINS, WS_ALLOWED_SUFFIXES)
+  ) {
     return true;
   }
 

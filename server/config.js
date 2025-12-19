@@ -116,11 +116,17 @@ function parseBodyLimit(value) {
   return Math.min(numeric, 10 * 1024 * 1024);
 }
 
+const DEFAULT_ALLOWED_ORIGINS = ['https://irgri.uk', 'https://mini-car-3d.netlify.app'];
+const DEFAULT_ALLOWED_SUFFIXES = ['.netlify.app'];
+
 const cpuCount = getCpuCount();
 const workerCount = resolveWorkerCount(cpuCount);
 const clusterEnabled = resolveClusterEnabled(workerCount);
 const corsOriginsConfig = parseOriginList(process.env.CROSSLINE_CORS_ORIGIN);
-const allowedCorsOrigins = new Set(corsOriginsConfig.origins.map((origin) => origin.toLowerCase()));
+const allowedCorsOrigins = new Set(
+  [...DEFAULT_ALLOWED_ORIGINS, ...corsOriginsConfig.origins].map((origin) => origin.toLowerCase()),
+);
+const allowedOriginSuffixes = new Set(DEFAULT_ALLOWED_SUFFIXES.map((origin) => origin.toLowerCase()));
 const maxBodyBytes = parseBodyLimit(process.env.CROSSLINE_MAX_BODY_BYTES);
 
 module.exports = {
@@ -132,6 +138,7 @@ module.exports = {
   security: {
     cors: {
       allowedOrigins: allowedCorsOrigins,
+      allowedOriginSuffixes,
       allowSameHost: true,
       allowAny: corsOriginsConfig.allowAny,
     },
@@ -140,6 +147,7 @@ module.exports = {
     },
     websocket: {
       allowedOrigins: allowedCorsOrigins,
+      allowedOriginSuffixes,
       allowSameHost: true,
       allowAny: corsOriginsConfig.allowAny,
     },

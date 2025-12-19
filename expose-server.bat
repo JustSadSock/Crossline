@@ -6,12 +6,14 @@ cd /d "%~dp0"
 rem ===== CONFIGURATION =====
 if "%PORT%"=="" set "PORT=3000"
 set "SCRIPT_DIR=%cd%"
+set "CROSSLINE_API_URL=https://irgri.uk"
+set "CROSSLINE_WS_URL=wss://irgri.uk"
 
 rem ===== HEADER =====
 echo ==============================================
 echo   Crossline // tunnel launcher
 echo ==============================================
-echo [INFO] Локальный сервер будет запущен на порту %PORT% и выведен в интернет через ngrok.
+echo [INFO] Локальный сервер будет запущен на порту %PORT% и выведен в интернет через Cloudflare Tunnel.
 echo.
 
 rem ===== TOOLCHAIN CHECK =====
@@ -24,30 +26,13 @@ where npm >nul 2>&1 || (
   goto :EOF
 )
 
-set "NGROK_CMD="
-if defined NGROK_EXE (
-  if exist "%NGROK_EXE%" (
-    set "NGROK_CMD=\"%NGROK_EXE%\""
-  ) else (
-    echo [ERROR] ngrok не найден по пути "%NGROK_EXE%".
-    echo        Укажите корректный путь через переменную NGROK_EXE или обновите скрипт.
-    goto :EOF
-  )
-) else (
-  for /f "delims=" %%I in ('where ngrok 2^>nul') do if not defined NGROK_CMD set "NGROK_CMD=\"%%~fI\""
-  if not defined NGROK_CMD (
-    echo [ERROR] ngrok не найден. Добавьте его в PATH или установите NGROK_EXE.
-    goto :EOF
-  )
+for /f "delims=" %%I in ('where cloudflared 2^>nul') do if not defined CLOUDFLARED_CMD set "CLOUDFLARED_CMD=\"%%~fI\""
+if not defined CLOUDFLARED_CMD (
+  echo [ERROR] cloudflared не найден. Добавьте его в PATH.
+  goto :EOF
 )
 
-echo [INFO] Используется ngrok: %NGROK_CMD%
-if not "%NGROK_AUTHTOKEN%"=="" (
-  echo [INFO] Применяем токен авторизации ngrok...
-  powershell -NoProfile -Command "try { %NGROK_CMD% config add-authtoken $Env:NGROK_AUTHTOKEN ^| Out-Null } catch { Write-Host '[WARN] Не удалось применить токен. Продолжаем.' }" >nul
-) else (
-  echo [WARN] Переменная NGROK_AUTHTOKEN не задана. При первом запуске ngrok запросит авторизацию.
-)
+echo [INFO] Используется cloudflared: %CLOUDFLARED_CMD%
 
 echo.
 rem ===== DEPENDENCIES =====
@@ -75,36 +60,17 @@ echo [INFO] Ожидание старта сервера...
 timeout /t 3 /nobreak >nul
 
 echo.
-rem ===== START NGROK =====
-echo [STEP] Запуск ngrok туннеля (только HTTPS)...
-start "Crossline Tunnel" cmd /k "cd /d \"%SCRIPT_DIR%\" && %NGROK_CMD% http %PORT% --scheme=https --log=stdout"
+rem ===== START CLOUDFLARE TUNNEL =====
+echo [STEP] Запуск Cloudflare Tunnel (irgri-tunnel)...
+start "Crossline Tunnel" cmd /k "cd /d \"%SCRIPT_DIR%\" && %CLOUDFLARED_CMD% tunnel run irgri-tunnel"
 if errorlevel 1 (
-  echo [ERROR] Не удалось запустить ngrok.
+  echo [ERROR] Не удалось запустить cloudflared.
   goto :EOF
 )
 
-echo [INFO] Ожидание публичного адреса...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "
-  $deadline = (Get-Date).AddSeconds(60);
-  $publicUrl = $null;
-  while ((Get-Date) -lt $deadline -and -not $publicUrl) {
-    try {
-      $response = Invoke-RestMethod -Uri 'http://127.0.0.1:4040/api/tunnels' -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop;
-      $publicUrl = ($response.tunnels | Where-Object { $_.proto -eq 'https' } | Select-Object -First 1).public_url;
-      if (-not $publicUrl) {
-        $publicUrl = ($response.tunnels | Select-Object -First 1).public_url;
-      }
-    } catch {
-      Start-Sleep -Seconds 2;
-    }
-  }
-  if ($publicUrl) {
-    Write-Host "[READY] Публичный адрес: $publicUrl" -ForegroundColor Green;
-    Write-Host "[HINT] Передайте этот адрес клиенту через параметр '?server=' или переменные окружения." -ForegroundColor Cyan;
-  } else {
-    Write-Host "[WARN] Не удалось автоматически получить ссылку. Откройте окно ngrok." -ForegroundColor Yellow;
-  }
-"
+echo [READY] Публичный адрес: https://irgri.uk
+echo [HINT] Клиент автоматически стучится в https://irgri.uk/health для проверки сервера.
+echo [HINT] Если используете index.html локально, откройте его с параметром ?server=https://irgri.uk
 
 echo.
 if exist "%SCRIPT_DIR%\monitor-server.ps1" (
