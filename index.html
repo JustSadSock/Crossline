@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles/main.css" />
+  <script src="./scripts/runtime-config.js"></script>
 </head>
 <body>
   <div class="background-grid"></div>
@@ -47,8 +48,25 @@
           <button id="play-offline" class="button button--primary" type="button">Играть офлайн</button>
         </div>
         <div class="mode-card" data-mode="online">
-          <h3>Онлайн арена</h3>
-          <p>Серверный режим отключён в этой сборке. Играть можно только офлайн.</p>
+          <div class="mode-card__head">
+            <div>
+              <h3>Онлайн арена</h3>
+              <p class="mode-card__subtitle">Найдите комнату или создайте свою, чтобы сыграть с друзьями.</p>
+            </div>
+            <span id="online-status" class="pill pill--neutral">поиск сервера…</span>
+          </div>
+          <div class="room-actions">
+            <label class="room-actions__label" for="room-name">Новая комната</label>
+            <div class="room-actions__row">
+              <input id="room-name" class="room-actions__input" type="text" maxlength="24" placeholder="Неон арена" />
+              <button id="create-room" class="button button--ghost" type="button">Создать</button>
+            </div>
+            <div class="room-actions__controls">
+              <button id="refresh-rooms" class="button button--ghost" type="button">Обновить список</button>
+              <button id="join-online" class="button button--primary" type="button" disabled>Подключиться</button>
+            </div>
+          </div>
+          <div id="room-list" class="room-list" role="list"></div>
         </div>
       </section>
     </section>

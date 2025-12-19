@@ -1,4 +1,5 @@
 import { OfflineGame } from './game-offline.js';
+import { OnlineGame } from './game-online.js';
 
 const lobby = document.getElementById('lobby');
 const gameStage = document.getElementById('game-stage');
@@ -28,6 +29,15 @@ const openControlsBtn = document.getElementById('open-controls');
 const controlsDialog = document.getElementById('controls-dialog');
 const closeControlsBtn = document.getElementById('close-controls');
 const notificationsRoot = document.getElementById('notifications');
+const onlineStatusPill = document.getElementById('online-status');
+const roomList = document.getElementById('room-list');
+const roomNameInput = document.getElementById('room-name');
+const createRoomBtn = document.getElementById('create-room');
+const refreshRoomsBtn = document.getElementById('refresh-rooms');
+const joinOnlineBtn = document.getElementById('join-online');
+
+const DEFAULT_API_ORIGIN = 'https://irgri.uk';
+const DEFAULT_WS_ORIGIN = 'wss://irgri.uk';
 
 const SHIELD_KEY_CODES = new Set(['ShiftLeft', 'ShiftRight']);
 const SHIELD_KEY_FALLBACKS = new Set(['q', 'e']);
@@ -50,6 +60,15 @@ const inputState = {
 const state = {
   currentGame: null,
   currentMode: null,
+};
+
+const onlineState = {
+  available: false,
+  loading: false,
+  rooms: [],
+  selectedRoomId: null,
+  apiOrigin: '',
+  wsOrigin: '',
 };
 
 const dashChargeElements = dashCharges ? Array.from(dashCharges.querySelectorAll('.hud__charge')) : [];
@@ -285,6 +304,35 @@ function sanitizeName(value) {
     return clean.slice(0, 16);
   }
   return `Pilot-${Math.random().toString(16).slice(2, 6)}`;
+}
+
+function resolveApiOrigin() {
+  const raw = (window.CROSSLINE_API_URL || DEFAULT_API_ORIGIN || '').trim();
+  try {
+    const parsed = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+    parsed.pathname = parsed.pathname.replace(/\/$/, '');
+    return parsed.origin;
+  } catch (error) {
+    console.warn('Invalid API origin; falling back to default', error);
+    return DEFAULT_API_ORIGIN;
+  }
+}
+
+function resolveWsOrigin() {
+  const explicit = (window.CROSSLINE_WS_URL || '').trim();
+  const base = explicit || onlineState.apiOrigin || resolveApiOrigin();
+  try {
+    const parsed = new URL(base.startsWith('http') || base.startsWith('ws') ? base : `https://${base}`);
+    const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
+    parsed.protocol = secure ? 'wss:' : 'ws:';
+    parsed.pathname = '/';
+    parsed.search = '';
+    parsed.hash = '';
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch (error) {
+    console.warn('Invalid WS origin; using default', error);
+    return DEFAULT_WS_ORIGIN;
+  }
 }
 
 function toggleView(inGame) {
@@ -654,6 +702,188 @@ function returnToLobby() {
   notifier.info('Вы вернулись в лобби.', { timeout: 3200 });
 }
 
+function setOnlinePill(text, stateName = 'neutral') {
+  if (!onlineStatusPill) return;
+  onlineStatusPill.textContent = text;
+  onlineStatusPill.classList.remove('pill--success', 'pill--error', 'pill--neutral');
+  onlineStatusPill.classList.add(`pill--${stateName}`);
+}
+
+function setRoomControlsDisabled(disabled) {
+  if (createRoomBtn) createRoomBtn.disabled = disabled;
+  if (refreshRoomsBtn) refreshRoomsBtn.disabled = disabled;
+  if (joinOnlineBtn) joinOnlineBtn.disabled = disabled || !onlineState.selectedRoomId;
+  if (roomNameInput) roomNameInput.disabled = disabled;
+}
+
+function renderRoomList() {
+  if (!roomList) return;
+  roomList.innerHTML = '';
+  if (!onlineState.available) {
+    const info = document.createElement('p');
+    info.className = 'mode-card__subtitle';
+    info.textContent = 'Сервер недоступен. Попробуйте позже или сыграйте офлайн.';
+    roomList.append(info);
+    setRoomControlsDisabled(true);
+    return;
+  }
+
+  if (!onlineState.rooms.length) {
+    const empty = document.createElement('p');
+    empty.className = 'mode-card__subtitle';
+    empty.textContent = 'Пока нет комнат. Создайте новую, чтобы открыть лобби.';
+    roomList.append(empty);
+    return;
+  }
+
+  onlineState.rooms.forEach((room) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'room-card';
+    card.setAttribute('role', 'listitem');
+    card.dataset.roomId = room.id;
+
+    const title = document.createElement('h4');
+    title.className = 'room-card__title';
+    title.textContent = room.name || room.id;
+
+    const meta = document.createElement('p');
+    meta.className = 'room-card__meta';
+    const playersLabel = `${room.players || 0}/${room.maxPlayers || 0} пилотов`;
+    const statusLabel = room.status === 'live' ? 'идёт матч' : 'ожидает';
+    meta.textContent = `${playersLabel} • ${statusLabel}`;
+
+    if (onlineState.selectedRoomId === room.id) {
+      card.classList.add('room-card--selected');
+    }
+
+    card.addEventListener('click', () => {
+      onlineState.selectedRoomId = room.id;
+      renderRoomList();
+      setRoomControlsDisabled(onlineState.loading);
+    });
+
+    card.append(title, meta);
+    roomList.append(card);
+  });
+}
+
+async function fetchJson(path, options = {}) {
+  const apiOrigin = onlineState.apiOrigin || resolveApiOrigin();
+  const url = `${apiOrigin}${path}`;
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  return fetch(url, { cache: 'no-store', ...options, headers });
+}
+
+async function checkServerAvailability() {
+  onlineState.apiOrigin = resolveApiOrigin();
+  onlineState.wsOrigin = resolveWsOrigin();
+  setOnlinePill('поиск сервера…', 'neutral');
+  try {
+    const response = await fetchJson('/health');
+    if (!response.ok) {
+      throw new Error('Healthcheck failed');
+    }
+    const payload = await response.json();
+    if (!payload || payload.status !== 'ok') {
+      throw new Error('Invalid health payload');
+    }
+    onlineState.available = true;
+    setOnlinePill('сервер онлайн', 'success');
+    notifier.success('Сервер найден: irgri.uk', { timeout: 3200 });
+    await loadRooms();
+  } catch (error) {
+    onlineState.available = false;
+    onlineState.rooms = [];
+    onlineState.selectedRoomId = null;
+    setOnlinePill('сервер недоступен', 'error');
+    renderRoomList();
+    notifier.warning('Сервер не отвечает. Можно играть офлайн.', { timeout: 5200 });
+  }
+  setRoomControlsDisabled(!onlineState.available || onlineState.loading);
+}
+
+async function loadRooms() {
+  if (!onlineState.available) {
+    renderRoomList();
+    return;
+  }
+  onlineState.loading = true;
+  setRoomControlsDisabled(true);
+  try {
+    const response = await fetchJson('/rooms');
+    if (!response.ok) {
+      throw new Error('Failed to load rooms');
+    }
+    const rooms = await response.json();
+    onlineState.rooms = Array.isArray(rooms) ? rooms : [];
+    if (!onlineState.rooms.some((room) => room.id === onlineState.selectedRoomId)) {
+      onlineState.selectedRoomId = onlineState.rooms[0] ? onlineState.rooms[0].id : null;
+    }
+    renderRoomList();
+  } catch (error) {
+    notifier.error('Не удалось получить список комнат.', { timeout: 3600 });
+  } finally {
+    onlineState.loading = false;
+    setRoomControlsDisabled(false);
+  }
+}
+
+async function createRoom() {
+  if (!onlineState.available || onlineState.loading) return;
+  const rawName = roomNameInput ? roomNameInput.value : '';
+  const name = sanitizeName(rawName || 'Neon Squad');
+  onlineState.loading = true;
+  setRoomControlsDisabled(true);
+  try {
+    const response = await fetchJson('/rooms', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) {
+      throw new Error('Room create failed');
+    }
+    const room = await response.json();
+    notifier.success(`Комната «${room.name || name}» создана.`, { timeout: 3600 });
+    if (roomNameInput) {
+      roomNameInput.value = '';
+    }
+    onlineState.selectedRoomId = room.id;
+    await loadRooms();
+  } catch (error) {
+    notifier.error('Не удалось создать комнату.', { timeout: 3200 });
+  } finally {
+    onlineState.loading = false;
+    setRoomControlsDisabled(false);
+  }
+}
+
+async function startOnlineGame() {
+  if (!onlineState.available || !onlineState.selectedRoomId) return;
+  stopCurrentGame();
+  toggleView(true);
+  ui.reset();
+  state.currentMode = 'online';
+  const playerName = sanitizeName(playerNameInput.value || '');
+  const room = onlineState.rooms.find((entry) => entry.id === onlineState.selectedRoomId);
+  const subtitle = room ? room.name : 'arena';
+  const game = new OnlineGame({ canvas, inputState, ui, wsBaseUrl: onlineState.wsOrigin });
+  state.currentGame = game;
+  ui.setMode('online', subtitle);
+  ui.setStatus('Подключение к серверу…', 'neutral');
+  notifier.info('Открываем соединение с ареной…', { timeout: 2600 });
+  try {
+    await game.start({ roomId: onlineState.selectedRoomId, playerName });
+    ui.setStatus('Связь установлена, бой начался!', 'success');
+    notifier.success('Вы подключились к онлайн-арене.', { timeout: 3600 });
+  } catch (error) {
+    console.error('Online start failed', error);
+    ui.setStatus('Не удалось подключиться', 'error');
+    notifier.error('Не удалось подключиться к серверу.', { timeout: 3600 });
+    returnToLobby();
+  }
+}
+
 async function init() {
   attachInputListeners();
   attachMobileControls();
@@ -685,8 +915,21 @@ async function init() {
       }
     });
   }
+  if (createRoomBtn) {
+    createRoomBtn.addEventListener('click', () => createRoom());
+  }
+  if (refreshRoomsBtn) {
+    refreshRoomsBtn.addEventListener('click', () => loadRooms());
+  }
+  if (joinOnlineBtn) {
+    joinOnlineBtn.addEventListener('click', () => startOnlineGame());
+  }
   ui.reset();
-  notifier.info('Онлайн-сервер отключён. Играйте офлайн!', { timeout: 5200 });
+  await (window.__crosslineConfigReady || Promise.resolve());
+  await checkServerAvailability();
+  if (!onlineState.available) {
+    notifier.info('Онлайн режим недоступен — пока можно играть офлайн.', { timeout: 5200 });
+  }
 }
 
 init().catch((error) => {
