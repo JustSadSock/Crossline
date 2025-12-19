@@ -8,6 +8,7 @@ if "%PORT%"=="" set "PORT=3000"
 set "SCRIPT_DIR=%cd%"
 set "CROSSLINE_API_URL=https://irgri.uk"
 set "CROSSLINE_WS_URL=wss://irgri.uk"
+set "CLOUDFLARE_DEFAULT=C:\Users\SadSock\.cloudflared\cloudflared.exe"
 
 rem ===== HEADER =====
 echo ==============================================
@@ -19,17 +20,18 @@ echo.
 rem ===== TOOLCHAIN CHECK =====
 where node >nul 2>&1 || (
   echo [ERROR] Node.js не найден в PATH. Установите Node LTS и перезапустите окно.
-  goto :EOF
+  goto :FAIL
 )
 where npm >nul 2>&1 || (
   echo [ERROR] npm не найден. Проверьте установку Node.js.
-  goto :EOF
+  goto :FAIL
 )
 
+if exist "%CLOUDFLARE_DEFAULT%" set "CLOUDFLARED_CMD=\"%CLOUDFLARE_DEFAULT%\""
 for /f "delims=" %%I in ('where cloudflared 2^>nul') do if not defined CLOUDFLARED_CMD set "CLOUDFLARED_CMD=\"%%~fI\""
 if not defined CLOUDFLARED_CMD (
-  echo [ERROR] cloudflared не найден. Добавьте его в PATH.
-  goto :EOF
+  echo [ERROR] cloudflared не найден. Укажите путь в %CLOUDFLARE_DEFAULT% или добавьте его в PATH.
+  goto :FAIL
 )
 
 echo [INFO] Используется cloudflared: %CLOUDFLARED_CMD%
@@ -43,7 +45,7 @@ if exist "%SCRIPT_DIR%\node_modules" (
   npm ci
   if errorlevel 1 (
     echo [ERROR] npm ci завершился с ошибкой. Проверьте лог выше.
-    goto :EOF
+    goto :FAIL
   )
 )
 
@@ -53,7 +55,7 @@ echo [STEP] Запуск игрового сервера на http://localhost:%
 start "Crossline Server" cmd /k "cd /d \"%SCRIPT_DIR%\" && set PORT=%PORT% && node server\index.js"
 if errorlevel 1 (
   echo [ERROR] Не удалось запустить серверное окно.
-  goto :EOF
+  goto :FAIL
 )
 
 echo [INFO] Ожидание старта сервера...
@@ -65,7 +67,7 @@ echo [STEP] Запуск Cloudflare Tunnel (irgri-tunnel)...
 start "Crossline Tunnel" cmd /k "cd /d \"%SCRIPT_DIR%\" && %CLOUDFLARED_CMD% tunnel run irgri-tunnel"
 if errorlevel 1 (
   echo [ERROR] Не удалось запустить cloudflared.
-  goto :EOF
+  goto :FAIL
 )
 
 echo [READY] Публичный адрес: https://irgri.uk
@@ -81,3 +83,11 @@ if exist "%SCRIPT_DIR%\monitor-server.ps1" (
 echo [READY] Все процессы запущены. Закройте это окно после завершения работы.
 pause
 endlocal
+
+goto :EOF
+
+:FAIL
+echo.
+echo Нажмите любую клавишу, чтобы закрыть окно после устранения ошибки.
+pause
+exit /b 1
