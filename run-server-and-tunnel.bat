@@ -1,14 +1,16 @@
 @echo off
-setlocal
-enableextensions
+setlocal enableextensions enabledelayedexpansion
 chcp 65001 >nul 2>&1
+
+rem ===== ROOT PATH =====
 for %%I in ("%~dp0.") do set "ROOT=%%~fI"
-cd /d "%ROOT%"
+pushd "%ROOT%" || goto :FAIL
 
 rem ===== CONFIGURATION =====
 if "%PORT%"=="" set "PORT=3000"
 set "CROSSLINE_API_URL=https://irgri.uk"
 set "CROSSLINE_WS_URL=wss://irgri.uk"
+if "%CLOUDFLARE_CONFIG%"=="" set "CLOUDFLARE_CONFIG=%USERPROFILE%\.cloudflared\config.yml"
 
 rem ===== HEADER =====
 echo ==============================================
@@ -16,6 +18,7 @@ echo   Crossline // local server + tunnel
 echo ==============================================
 echo [INFO] Порт сервера: %PORT%
 echo [INFO] Публичный адрес: https://irgri.uk
+echo [INFO] Конфиг cloudflared: %CLOUDFLARE_CONFIG%
 echo.
 
 rem ===== TOOLCHAIN CHECK =====
@@ -23,8 +26,15 @@ call :ensure_tool node "Node.js" || goto :FAIL
 call :ensure_tool npm "npm" || goto :FAIL
 call :ensure_tool cloudflared "cloudflared" || goto :FAIL
 
+rem ===== CLOUDFLARED CONFIG CHECK =====
+if not exist "%CLOUDFLARE_CONFIG%" (
+  echo [ERROR] Не найден конфиг cloudflared: %CLOUDFLARE_CONFIG%
+  echo         Проверьте путь или укажите его через переменную CLOUDFLARE_CONFIG.
+  goto :FAIL
+)
+
 rem ===== DEPENDENCIES =====
-if not exist "%ROOT%node_modules" (
+if not exist "%ROOT%\node_modules" (
   echo [STEP] Устанавливаем зависимости (npm ci)...
   call npm ci || goto :FAIL
 ) else (
@@ -33,12 +43,12 @@ if not exist "%ROOT%node_modules" (
 
 echo.
 echo [STEP] Запускаем игровой сервер на http://localhost:%PORT% ...
-set "SERVER_CMD=cd /d \"%ROOT%\" ^&^& set PORT=%PORT% ^&^& node server\\index.js"
-call :launch_window "Crossline Server" "%SERVER_CMD%" "Сервер завершился" || goto :FAIL
+set "SERVER_CMD=pushd \"%ROOT%\" ^&^& set PORT=%PORT% ^&^& node server\\index.js ^|^| (echo [ERROR] Сервер завершился с кодом !errorlevel! ^& pause)"
+call :launch_window "Crossline Server" "%SERVER_CMD%" || goto :FAIL
 
 echo [STEP] Запускаем cloudflared tunnel (irgri-tunnel)...
-set "TUNNEL_CMD=cd /d \"%ROOT%\" ^&^& cloudflared tunnel run irgri-tunnel"
-call :launch_window "Crossline Tunnel" "%TUNNEL_CMD%" "Cloudflared завершился" || goto :FAIL
+set "TUNNEL_CMD=pushd \"%ROOT%\" ^&^& cloudflared --config \"%CLOUDFLARE_CONFIG%\" tunnel run irgri-tunnel ^|^| (echo [ERROR] Cloudflared завершился с кодом !errorlevel! ^& pause)"
+call :launch_window "Crossline Tunnel" "%TUNNEL_CMD%" || goto :FAIL
 
 echo.
 echo [READY] Сервер и туннель запущены в отдельных окнах.
@@ -59,23 +69,8 @@ exit /b 1
 setlocal enabledelayedexpansion
 set "WINDOW_TITLE=%~1"
 set "RUN_COMMAND=%~2"
-set "ERROR_MESSAGE=%~3"
-set "WRAPPER=%TEMP%\crossline_launch_!RANDOM!.cmd"
-(
-  echo @echo off
-  echo chcp 65001 ^>nul 2^>^&1
-  echo title !WINDOW_TITLE!
-  echo echo [RUN] !WINDOW_TITLE!
-  echo echo -------------------------------
-  echo cd /d "%ROOT%"
-  echo %RUN_COMMAND%
-  echo if errorlevel 1 ^(
-  echo   echo.
-  echo   echo [ERROR] !ERROR_MESSAGE! ^(код ^!errorlevel^!^)
-  echo   pause
-  echo ^)
-) > "!WRAPPER!"
-start "!WINDOW_TITLE!" cmd /k call "!WRAPPER!"
+echo [INFO] Открываем окно: !WINDOW_TITLE!
+start "!WINDOW_TITLE!" cmd /k "!RUN_COMMAND!"
 set "EXIT_CODE=%ERRORLEVEL%"
 endlocal & exit /b %EXIT_CODE%
 
