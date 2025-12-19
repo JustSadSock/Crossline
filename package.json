@@ -1,18 +1,14 @@
 {
   "name": "crossline",
   "version": "1.0.0",
-  "description": "A browser-based multiplayer shooter game",
-  "main": "server/index.js",
+  "description": "A browser-based shooter game (offline edition)",
+  "main": "index.html",
   "scripts": {
-    "test": "node --check server/index.js",
+    "test": "echo \"No automated tests configured\"",
     "build": "echo 'Static build step not required'"
   },
-  "keywords": ["game", "shooter", "multiplayer", "websocket"],
+  "keywords": ["game", "shooter", "browser"],
   "author": "",
   "license": "ISC",
-  "dependencies": {
-    "prom-client": "^15.1.1",
-    "pino": "^8.17.0",
-    "ws": "^8.17.1"
-  }
+  "dependencies": {}
 }

@@ -29,23 +29,6 @@
       </button>
     </header>
     <section class="lobby__grid">
-      <section class="panel panel--rooms">
-        <div class="panel__header">
-          <h2>Комнаты</h2>
-          <button id="refresh-rooms" class="button button--ghost" type="button">Обновить</button>
-        </div>
-        <div id="rooms-list" class="rooms-list" aria-live="polite"></div>
-        <button id="play-online" class="button button--primary panel__join" type="button" disabled>
-          Присоединиться
-        </button>
-        <form id="create-room-form" class="panel__form">
-          <label class="panel__label" for="room-name">Создать комнату</label>
-          <div class="panel__row">
-            <input id="room-name" class="panel__input" type="text" maxlength="24" placeholder="Hyperlane" />
-            <button class="button" type="submit">Старт</button>
-          </div>
-        </form>
-      </section>
       <section class="panel panel--modes">
         <div class="panel__header">
           <h2>Режимы</h2>
@@ -65,7 +48,7 @@
         </div>
         <div class="mode-card" data-mode="online">
           <h3>Онлайн арена</h3>
-          <p>Выберите комнату слева, чтобы подключиться к живым игрокам.</p>
+          <p>Серверный режим отключён в этой сборке. Играть можно только офлайн.</p>
         </div>
       </section>
     </section>
@@ -177,20 +160,6 @@
     </div>
   </div>
 
-  <template id="room-template">
-    <article class="room-card">
-      <div class="room-card__info">
-        <h3 class="room-card__title"></h3>
-        <p class="room-card__meta"></p>
-      </div>
-    </article>
-  </template>
-
-  <script>
-    window.CROSSLINE_API_URL = '<%= process.env.CROSSLINE_API_URL %>';
-    window.CROSSLINE_WS_URL = '<%= process.env.CROSSLINE_WS_URL %>';
-  </script>
-  <script src="./scripts/runtime-config.js"></script>
   <script type="module" src="./scripts/main.js"></script>
 </body>
 </html>
