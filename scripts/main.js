@@ -1,13 +1,7 @@
-import { OnlineGame } from './game-online.js';
 import { OfflineGame } from './game-offline.js';
 
 const lobby = document.getElementById('lobby');
 const gameStage = document.getElementById('game-stage');
-const roomsList = document.getElementById('rooms-list');
-const refreshRoomsBtn = document.getElementById('refresh-rooms');
-const createRoomForm = document.getElementById('create-room-form');
-const roomNameInput = document.getElementById('room-name');
-const playOnlineBtn = document.getElementById('play-online');
 const playOfflineBtn = document.getElementById('play-offline');
 const difficultySelect = document.getElementById('offline-difficulty');
 const playerNameInput = document.getElementById('player-name');
@@ -33,7 +27,6 @@ const aimJoystick = document.getElementById('aim-joystick');
 const openControlsBtn = document.getElementById('open-controls');
 const controlsDialog = document.getElementById('controls-dialog');
 const closeControlsBtn = document.getElementById('close-controls');
-const roomTemplate = document.getElementById('room-template');
 const notificationsRoot = document.getElementById('notifications');
 
 const SHIELD_KEY_CODES = new Set(['ShiftLeft', 'ShiftRight']);
@@ -55,25 +48,11 @@ const inputState = {
 };
 
 const state = {
-  selectedRoomId: null,
-  selectedRoomElement: null,
-  selectedRoomName: '',
   currentGame: null,
   currentMode: null,
 };
 
 const dashChargeElements = dashCharges ? Array.from(dashCharges.querySelectorAll('.hud__charge')) : [];
-
-const MOVEMENT_KEY_MAP = {
-  KeyW: 'w',
-  ArrowUp: 'w',
-  KeyS: 's',
-  ArrowDown: 's',
-  KeyA: 'a',
-  ArrowLeft: 'a',
-  KeyD: 'd',
-  ArrowRight: 'd',
-};
 
 const SHIELD_UI_FULL_A = { r: 77, g: 246, b: 255 };
 const SHIELD_UI_FULL_B = { r: 255, g: 44, b: 251 };
@@ -136,136 +115,7 @@ function updateDashUi(value) {
   });
 }
 
-const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '::1'];
-const NETLIFY_HOST_RE = /\.netlify\.(app|dev)$/i;
-const PLACEHOLDER_VALUE_RE = /^<%=\s*process\.env/i;
-
-function sanitizeUrlCandidate(value) {
-  if (value == null) {
-    return '';
-  }
-  const raw = typeof value === 'string' ? value.trim() : `${value}`.trim();
-  if (!raw) {
-    return '';
-  }
-  const lowered = raw.toLowerCase();
-  if (lowered === 'undefined' || lowered === 'null' || lowered === 'false') {
-    return '';
-  }
-  if (PLACEHOLDER_VALUE_RE.test(raw)) {
-    return '';
-  }
-  return raw;
-}
-
-function isPrivateHostname(hostname) {
-  if (!hostname) return false;
-  return (
-    LOCAL_HOSTNAMES.includes(hostname) ||
-    hostname.endsWith('.local') ||
-    hostname.startsWith('127.') ||
-    hostname.startsWith('192.168.') ||
-    hostname.startsWith('10.')
-  );
-}
-
-function isLocalEnvironment() {
-  const hostname = window.location?.hostname;
-  if (!hostname) {
-    return false;
-  }
-  return isPrivateHostname(hostname) || NETLIFY_HOST_RE.test(hostname);
-}
-
-function normalizeHttpUrl(rawUrl) {
-  const value = sanitizeUrlCandidate(rawUrl);
-  if (!value) {
-    return '';
-  }
-  try {
-    const parsed = value.includes('://') ? new URL(value) : new URL(`https://${value}`);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return '';
-    }
-    if (parsed.protocol === 'http:' && !isPrivateHostname(parsed.hostname)) {
-      parsed.protocol = 'https:';
-    }
-    parsed.hash = '';
-    const cleanedPath = parsed.pathname.replace(/\/+$/, '');
-    const path = cleanedPath && cleanedPath !== '/' ? cleanedPath : '';
-    return `${parsed.origin}${path}`;
-  } catch (error) {
-    console.warn('Invalid server URL provided, ignoring', error);
-    return '';
-  }
-}
-
-function httpToWs(baseUrl) {
-  try {
-    const parsed = new URL(baseUrl);
-    const protocol = parsed.protocol === 'https:' || !isPrivateHostname(parsed.hostname) ? 'wss:' : 'ws:';
-    return `${protocol}//${parsed.host}`;
-  } catch (error) {
-    console.warn('Unable to derive WebSocket URL from base', error);
-    return '';
-  }
-}
-
-function normalizeWsUrl(rawUrl) {
-  const value = sanitizeUrlCandidate(rawUrl);
-  if (!value) {
-    return '';
-  }
-  try {
-    const parsed = value.includes('://') ? new URL(value) : new URL(`wss://${value}`);
-    if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
-      return '';
-    }
-    if (parsed.protocol === 'ws:' && !isPrivateHostname(parsed.hostname)) {
-      parsed.protocol = 'wss:';
-    }
-    parsed.hash = '';
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname}${parsed.search}`;
-  } catch (error) {
-    console.warn('Invalid WebSocket URL provided, ignoring', error);
-    return '';
-  }
-}
-
-function getApiBaseUrl() {
-  const globalUrl = normalizeHttpUrl(window.CROSSLINE_API_URL);
-  if (globalUrl) {
-    return globalUrl;
-  }
-  if (isLocalEnvironment()) {
-    return window.location.origin;
-  }
-  return '';
-}
-
-function getWsBaseUrl() {
-  const explicit = normalizeWsUrl(window.CROSSLINE_WS_URL);
-  if (explicit) {
-    return explicit;
-  }
-  const apiUrl = getApiBaseUrl();
-  if (apiUrl) {
-    const derived = httpToWs(apiUrl);
-    if (derived) {
-      return derived;
-    }
-  }
-  if (isLocalEnvironment()) {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}`;
-  }
-  return '';
-}
-
 const notifier = createNotifier(notificationsRoot);
-const ROOMS_ERROR_COOLDOWN = 4000;
-let lastRoomsErrorAt = 0;
 
 const ui = {
   reset() {
@@ -340,54 +190,52 @@ function updateScoreboard(entries) {
       li.append(name, score);
       scoreboard.append(li);
     });
-  if (!entries.length) {
-    const li = document.createElement('li');
-    li.textContent = 'Нет активных пилотов';
-    scoreboard.append(li);
-  }
 }
 
 function createNotifier(container) {
   if (!container) {
     return {
-      show() {},
       info() {},
       success() {},
       warning() {},
       error() {},
     };
   }
-  const icons = {
-    info: '🛈',
-    success: '✔',
-    warning: '⚠',
-    error: '✖',
+
+  const ICONS = {
+    info: 'ℹ️',
+    success: '✅',
+    warning: '⚠️',
+    error: '⛔',
   };
 
-  const show = (type, message, { timeout = 5000 } = {}) => {
+  const show = (type, message, { timeout = 4200 } = {}) => {
     const node = document.createElement('div');
     node.className = `notification notification--${type}`;
-    node.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    node.setAttribute('role', 'status');
+    node.setAttribute('aria-live', 'polite');
 
     const icon = document.createElement('span');
     icon.className = 'notification__icon';
-    icon.textContent = icons[type] || icons.info;
+    icon.textContent = ICONS[type] || ICONS.info;
 
     const body = document.createElement('div');
     body.className = 'notification__body';
     body.textContent = message;
 
     const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
     closeBtn.className = 'notification__close';
+    closeBtn.type = 'button';
     closeBtn.setAttribute('aria-label', 'Закрыть уведомление');
-    closeBtn.innerHTML = '&times;';
+    closeBtn.textContent = '×';
 
     let hideTimer = null;
-
     const close = () => {
-      if (node.dataset.state === 'closing') return;
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+      }
       node.dataset.state = 'closing';
+      requestAnimationFrame(() => node.remove());
     };
 
     if (timeout > 0) {
@@ -408,12 +256,6 @@ function createNotifier(container) {
     });
 
     closeBtn.addEventListener('click', close);
-
-    node.addEventListener('animationend', (event) => {
-      if (event.animationName === 'notification-out') {
-        node.remove();
-      }
-    });
 
     node.append(icon, body, closeBtn);
     container.append(node);
@@ -475,237 +317,7 @@ function setPointerFromClientPosition(clientX, clientY) {
   inputState.pointer.y = Math.max(0, Math.min(canvas.height, y));
 }
 
-async function loadRooms() {
-  roomsList.innerHTML = '<p class="room-card__meta">Загрузка комнат…</p>';
-  if (state.selectedRoomElement) {
-    state.selectedRoomElement.classList.remove('room-card--selected');
-    state.selectedRoomElement = null;
-  }
-  playOnlineBtn.disabled = true;
-  const previousRoomId = state.selectedRoomId;
-  const previousRoomName = state.selectedRoomName;
-  const baseUrl = getApiBaseUrl();
-  if (!baseUrl) {
-    roomsList.innerHTML = '';
-    const hint = document.createElement('p');
-    hint.className = 'room-card__meta';
-    hint.textContent = 'Сервер недоступен. Попробуйте позже.';
-    roomsList.append(hint);
-    clearSelectedRoom();
-    const now = Date.now();
-    if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
-      notifier.warning('Онлайн-сервер сейчас недоступен. Проверьте туннель и попробуйте снова.', {
-        timeout: 6500,
-      });
-      lastRoomsErrorAt = now;
-    }
-    return;
-  }
-  try {
-    const response = await fetch(`${baseUrl}/rooms`, { cache: 'no-store' });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const rooms = await response.json();
-    roomsList.innerHTML = '';
-    if (!rooms.length) {
-      const empty = document.createElement('p');
-      empty.className = 'room-card__meta';
-      empty.textContent = 'Комнат пока нет. Создайте свою!';
-      roomsList.append(empty);
-      clearSelectedRoom();
-      return;
-    }
-    let restored = false;
-    rooms.forEach((room) => {
-      const node = roomTemplate.content.firstElementChild.cloneNode(true);
-      node.dataset.roomId = room.id;
-      node.setAttribute('role', 'button');
-      node.setAttribute('aria-pressed', 'false');
-      node.tabIndex = 0;
-      const title = node.querySelector('.room-card__title');
-      const meta = node.querySelector('.room-card__meta');
-      const displayName =
-        typeof room.name === 'string' && room.name.trim() ? room.name.trim() : room.id;
-      if (title) {
-        title.textContent = displayName;
-      }
-      if (meta) {
-        meta.textContent = `${room.players}/${room.maxPlayers} • ${room.status}`;
-      }
-      node.addEventListener('click', () => {
-        selectRoom(room.id, node, displayName);
-      });
-      node.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          selectRoom(room.id, node, displayName);
-        }
-      });
-      if (room.id === previousRoomId) {
-        restored = true;
-        state.selectedRoomElement = node;
-        state.selectedRoomId = room.id;
-        state.selectedRoomName = previousRoomName || displayName;
-        node.classList.add('room-card--selected');
-        node.setAttribute('aria-pressed', 'true');
-      }
-      roomsList.append(node);
-    });
-    if (restored) {
-      updateJoinButton();
-    } else {
-      clearSelectedRoom();
-    }
-  } catch (error) {
-    console.error('Failed to load rooms', error);
-    roomsList.innerHTML = '';
-    const fail = document.createElement('p');
-    fail.className = 'room-card__meta';
-    fail.textContent = 'Не удалось получить список комнат.';
-    roomsList.append(fail);
-    clearSelectedRoom();
-    const now = Date.now();
-    if (now - lastRoomsErrorAt > ROOMS_ERROR_COOLDOWN) {
-      notifier.error('Не удалось получить список комнат. Проверьте сервер или туннель.', { timeout: 6000 });
-      lastRoomsErrorAt = now;
-    }
-  }
-}
-
-function clearSelectedRoom() {
-  if (state.selectedRoomElement) {
-    state.selectedRoomElement.classList.remove('room-card--selected');
-    state.selectedRoomElement.setAttribute('aria-pressed', 'false');
-  }
-  state.selectedRoomElement = null;
-  state.selectedRoomId = null;
-  state.selectedRoomName = '';
-  updateJoinButton();
-}
-
-function selectRoom(roomId, element, roomName = '') {
-  if (state.selectedRoomElement && state.selectedRoomElement !== element) {
-    state.selectedRoomElement.classList.remove('room-card--selected');
-    state.selectedRoomElement.setAttribute('aria-pressed', 'false');
-  }
-  state.selectedRoomId = roomId;
-  state.selectedRoomName = roomName;
-  state.selectedRoomElement = element;
-  if (element) {
-    element.classList.add('room-card--selected');
-    element.setAttribute('aria-pressed', 'true');
-  }
-  updateJoinButton();
-}
-
-function updateJoinButton() {
-  if (!playOnlineBtn) return;
-  if (state.selectedRoomId) {
-    playOnlineBtn.disabled = false;
-    const label = state.selectedRoomName
-      ? `Присоединиться к «${state.selectedRoomName}»`
-      : 'Присоединиться';
-    playOnlineBtn.textContent = label;
-    playOnlineBtn.title = label;
-    playOnlineBtn.dataset.state = 'active';
-  } else {
-    playOnlineBtn.disabled = true;
-    playOnlineBtn.textContent = 'Присоединиться';
-    playOnlineBtn.dataset.state = 'idle';
-    playOnlineBtn.title = 'Выберите комнату, чтобы подключиться';
-  }
-}
-
-async function handleCreateRoom(event) {
-  event.preventDefault();
-  const name = roomNameInput.value.trim();
-  try {
-    const baseUrl = getApiBaseUrl();
-    if (!baseUrl) {
-      notifier.warning('Сервер недоступен. Попробуйте позже.');
-      return;
-    }
-    const response = await fetch(`${baseUrl}/rooms`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || 'Не удалось создать комнату');
-    }
-    const room = await response.json();
-    roomNameInput.value = '';
-    await loadRooms();
-    const created = Array.from(roomsList.querySelectorAll('.room-card')).find((el) => {
-      const title = el.querySelector('.room-card__title');
-      return title && title.textContent === room.name;
-    });
-    if (created) {
-      const displayName = typeof room.name === 'string' && room.name.trim() ? room.name.trim() : room.id;
-      selectRoom(room.id, created, displayName);
-      created.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-    notifier.success(`Комната «${room.name}» готова к старту.`, { timeout: 5000 });
-  } catch (error) {
-    console.error('Create room error', error);
-    notifier.error('Не удалось создать комнату. Проверьте сервер.');
-  }
-}
-
 function resetInputState() {
-  inputState.keys.clear();
-  inputState.fire = false;
-  inputState.shield = false;
-  inputState.dashRequested = false;
-  inputState.moveVector.x = 0;
-  inputState.moveVector.y = 0;
-  inputState.aimVector.x = 0;
-  inputState.aimVector.y = 0;
-  inputState.aimVector.active = false;
-  centerPointer();
-}
-
-function isTextInput(target) {
-  return target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
-}
-
-function updateMovementKeys(event, pressed) {
-  const target = event.target;
-  if (isTextInput(target) && target !== document.body) {
-    return false;
-  }
-  if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
-    return false;
-  }
-  const mapped = MOVEMENT_KEY_MAP[event.code] || null;
-  let handled = false;
-  if (mapped) {
-    handled = true;
-    if (pressed) {
-      inputState.keys.add(mapped);
-    } else {
-      inputState.keys.delete(mapped);
-    }
-  } else {
-    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
-    if (['w', 'a', 's', 'd'].includes(key)) {
-      handled = true;
-      if (pressed) {
-        inputState.keys.add(key);
-      } else {
-        inputState.keys.delete(key);
-      }
-    }
-  }
-  if (handled && event.cancelable) {
-    event.preventDefault();
-  }
-  return handled;
-}
-
-function releaseActiveInputs() {
   inputState.keys.clear();
   inputState.fire = false;
   inputState.shield = false;
@@ -718,208 +330,220 @@ function releaseActiveInputs() {
 }
 
 function attachInputListeners() {
-  document.addEventListener('keydown', (event) => {
-    if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
-      if (event.key === 'Escape') {
-        hideControlsModal();
-      }
-      return;
-    }
-    updateMovementKeys(event, true);
-    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
-    if (event.code === 'Space' && !isTextInput(event.target)) {
+  const handleKey = (event, isDown) => {
+    const key = event.code || event.key;
+    const lower = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+
+    if (key === 'Space') {
+      inputState.dashRequested = isDown;
       event.preventDefault();
-      if (!event.repeat) {
-        inputState.dashRequested = true;
-      }
-    } else if (
-      !isTextInput(event.target) &&
-      (SHIELD_KEY_CODES.has(event.code) || SHIELD_KEY_FALLBACKS.has(key))
-    ) {
-      if (event.cancelable) {
-        event.preventDefault();
-      }
-      inputState.shield = true;
-      inputState.fire = false;
-    }
-  });
-  document.addEventListener('keyup', (event) => {
-    if (controlsDialog && !controlsDialog.classList.contains('hidden')) {
       return;
     }
-    updateMovementKeys(event, false);
-    if (event.code === 'Space' && !isTextInput(event.target)) {
-      if (event.cancelable) {
-        event.preventDefault();
-      }
-    } else if (
-      !isTextInput(event.target) &&
-      (SHIELD_KEY_CODES.has(event.code) || SHIELD_KEY_FALLBACKS.has((event.key || '').toLowerCase()))
-    ) {
-      if (event.cancelable) {
-        event.preventDefault();
-      }
+
+    if (SHIELD_KEY_CODES.has(key) || SHIELD_KEY_FALLBACKS.has(lower)) {
+      inputState.shield = isDown;
+      return;
+    }
+
+    if (isDown) {
+      inputState.keys.add(key);
+    } else {
+      inputState.keys.delete(key);
+    }
+
+    updateMovementFromKeys();
+  };
+
+  window.addEventListener('keydown', (event) => {
+    handleKey(event, true);
+  });
+
+  window.addEventListener('keyup', (event) => {
+    handleKey(event, false);
+  });
+
+  canvas.addEventListener('mousedown', (event) => {
+    if (event.button === 0) {
+      inputState.fire = true;
+    } else if (event.button === 2) {
+      inputState.shield = true;
+    }
+    setPointerFromClientPosition(event.clientX, event.clientY);
+  });
+
+  canvas.addEventListener('mouseup', (event) => {
+    if (event.button === 0) {
+      inputState.fire = false;
+    } else if (event.button === 2) {
       inputState.shield = false;
     }
   });
-  canvas.addEventListener('mousemove', (event) => {
-    setPointerFromClientPosition(event.clientX, event.clientY);
+
+  canvas.addEventListener('mouseleave', () => {
+    inputState.fire = false;
+    inputState.shield = false;
   });
+
   canvas.addEventListener('contextmenu', (event) => {
     event.preventDefault();
   });
-  canvas.addEventListener('mousedown', (event) => {
-    if (event.button === 2) {
-      inputState.shield = true;
-      inputState.fire = false;
-    } else if (event.button === 0) {
-      if (!inputState.shield) {
+
+  canvas.addEventListener('mousemove', (event) => {
+    setPointerFromClientPosition(event.clientX, event.clientY);
+    inputState.aimVector.active = true;
+  });
+
+  canvas.addEventListener(
+    'touchstart',
+    (event) => {
+      if (event.touches && event.touches.length) {
+        setPointerFromClientPosition(event.touches[0].clientX, event.touches[0].clientY);
         inputState.fire = true;
+        inputState.aimVector.active = true;
       }
-    }
-  });
-  document.addEventListener('mouseup', (event) => {
-    if (event.button === 2) {
-      inputState.shield = false;
-    }
-    if (event.button === 0) {
+    },
+    { passive: true },
+  );
+
+  canvas.addEventListener(
+    'touchmove',
+    (event) => {
+      if (event.touches && event.touches.length) {
+        setPointerFromClientPosition(event.touches[0].clientX, event.touches[0].clientY);
+      }
+    },
+    { passive: true },
+  );
+
+  canvas.addEventListener(
+    'touchend',
+    () => {
       inputState.fire = false;
-    }
-  });
-  canvas.addEventListener('touchstart', (event) => {
-    if (event.cancelable) {
-      event.preventDefault();
-    }
-    const touch = event.changedTouches[0];
-    setPointerFromClientPosition(touch.clientX, touch.clientY);
-    if (!inputState.shield) {
-      inputState.fire = true;
-    }
-  }, { passive: false });
-  canvas.addEventListener('touchmove', (event) => {
-    if (event.cancelable) {
-      event.preventDefault();
-    }
-    const touch = event.changedTouches[0];
-    setPointerFromClientPosition(touch.clientX, touch.clientY);
-  }, { passive: false });
-  canvas.addEventListener('touchend', (event) => {
-    if (event.cancelable) {
-      event.preventDefault();
-    }
-    inputState.fire = false;
-  }, { passive: false });
+    },
+    { passive: true },
+  );
+}
+
+function updateMovementFromKeys() {
+  const direction = { x: 0, y: 0 };
+  if (inputState.keys.has('KeyW') || inputState.keys.has('ArrowUp')) direction.y -= 1;
+  if (inputState.keys.has('KeyS') || inputState.keys.has('ArrowDown')) direction.y += 1;
+  if (inputState.keys.has('KeyA') || inputState.keys.has('ArrowLeft')) direction.x -= 1;
+  if (inputState.keys.has('KeyD') || inputState.keys.has('ArrowRight')) direction.x += 1;
+  const length = Math.hypot(direction.x, direction.y) || 1;
+  inputState.moveVector.x = direction.x / length;
+  inputState.moveVector.y = direction.y / length;
+}
+
+function releaseActiveInputs() {
+  inputState.fire = false;
+  inputState.shield = false;
+  inputState.keys.clear();
+  inputState.moveVector.x = 0;
+  inputState.moveVector.y = 0;
 }
 
 function attachMobileControls() {
   if (!mobileControls) return;
-  const isTouch = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
-  mobileControls.classList.toggle('mobile-controls--active', isTouch);
-  if (!isTouch) {
-    return;
-  }
+
+  const isTouch = () => 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  mobileControls.classList.toggle('hidden', !isTouch());
 
   const bindButton = (element, onDown, onUp) => {
     if (!element) return;
-    element.addEventListener('touchstart', (event) => {
-      if (event.cancelable) event.preventDefault();
+    const start = (event) => {
+      event.preventDefault();
       onDown();
-    }, { passive: false });
-    element.addEventListener('touchend', (event) => {
-      if (event.cancelable) event.preventDefault();
+    };
+    const end = (event) => {
+      if (event) event.preventDefault();
       if (onUp) onUp();
-    }, { passive: false });
-    element.addEventListener('touchcancel', () => {
-      if (onUp) onUp();
-    });
+    };
+    element.addEventListener('mousedown', start);
+    element.addEventListener('touchstart', start, { passive: false });
+    element.addEventListener('mouseup', end);
+    element.addEventListener('mouseleave', end);
+    element.addEventListener('touchend', end, { passive: false });
   };
 
-  const setupJoystick = (root, onChange) => {
-    if (!root) return;
-    const stick = root.querySelector('.joystick__stick');
-    if (!stick) return;
+  const bindJoystick = (joystick, onMove) => {
+    if (!joystick) return;
+    const stick = joystick.querySelector('.joystick__stick');
     let active = false;
-    let identifier = null;
 
-    const reset = () => {
-      active = false;
-      identifier = null;
-      stick.style.transform = 'translate(-50%, -50%)';
-      onChange({ x: 0, y: 0, active: false });
-    };
-
-    const updateFromTouch = (touch) => {
-      const rect = root.getBoundingClientRect();
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-      const dx = touch.clientX - centerX;
-      const dy = touch.clientY - centerY;
-      const maxRadius = rect.width / 2;
-      const distance = Math.min(Math.hypot(dx, dy), maxRadius);
+    const update = (event) => {
+      if (!active) return;
+      const rect = joystick.getBoundingClientRect();
+      const touch = event.touches ? event.touches[0] : event;
+      const x = Math.max(0, Math.min(rect.width, touch.clientX - rect.left));
+      const y = Math.max(0, Math.min(rect.height, touch.clientY - rect.top));
+      const dx = x - rect.width / 2;
+      const dy = y - rect.height / 2;
+      const max = rect.width / 2;
+      const magnitude = Math.min(1, Math.hypot(dx, dy) / max);
       const angle = Math.atan2(dy, dx);
-      const normalized = maxRadius > 0 ? distance / maxRadius : 0;
-      const normX = Math.cos(angle) * normalized;
-      const normY = Math.sin(angle) * normalized;
-      const travel = maxRadius - stick.clientWidth / 2;
-      const offsetX = normX * travel;
-      const offsetY = normY * travel;
-      stick.style.transform = `translate(calc(-50% + ${offsetX}px), calc(-50% + ${offsetY}px))`;
-      onChange({ x: normX, y: normY, active: normalized > 0.1 });
+      const vector = { x: Math.cos(angle) * magnitude, y: Math.sin(angle) * magnitude };
+      if (stick) {
+        stick.style.transform = `translate(${vector.x * max * 0.6}px, ${vector.y * max * 0.6}px)`;
+      }
+      onMove(vector);
     };
 
-    root.addEventListener('touchstart', (event) => {
-      if (active) return;
-      const touch = event.changedTouches[0];
-      if (!touch) return;
-      if (event.cancelable) event.preventDefault();
+    const start = (event) => {
       active = true;
-      identifier = touch.identifier;
-      updateFromTouch(touch);
-    }, { passive: false });
-
-    root.addEventListener('touchmove', (event) => {
-      if (!active) return;
-      const touch = Array.from(event.changedTouches).find((t) => t.identifier === identifier);
-      if (!touch) return;
-      if (event.cancelable) event.preventDefault();
-      updateFromTouch(touch);
-    }, { passive: false });
-
-    const handleEnd = (event) => {
-      if (!active) return;
-      const touch = Array.from(event.changedTouches).find((t) => t.identifier === identifier);
-      if (!touch) return;
-      if (event.cancelable) event.preventDefault();
-      reset();
+      joystick.classList.add('joystick--active');
+      update(event);
     };
 
-    root.addEventListener('touchend', handleEnd, { passive: false });
-    root.addEventListener('touchcancel', reset);
+    const end = () => {
+      active = false;
+      joystick.classList.remove('joystick--active');
+      if (stick) {
+        stick.style.transform = 'translate(0, 0)';
+      }
+      onMove({ x: 0, y: 0 });
+    };
+
+    joystick.addEventListener('mousedown', start);
+    joystick.addEventListener('touchstart', start, { passive: false });
+    window.addEventListener('mousemove', update);
+    window.addEventListener('touchmove', update, { passive: false });
+    window.addEventListener('mouseup', end);
+    window.addEventListener('touchend', end);
+    window.addEventListener('touchcancel', end);
   };
 
-  setupJoystick(moveJoystick, ({ x, y, active }) => {
-    inputState.moveVector.x = active ? x : 0;
-    inputState.moveVector.y = active ? y : 0;
+  bindJoystick(moveJoystick, (vector) => {
+    inputState.moveVector.x = vector.x;
+    inputState.moveVector.y = vector.y;
   });
 
-  setupJoystick(aimJoystick, ({ x, y, active }) => {
-    inputState.aimVector.x = x;
-    inputState.aimVector.y = y;
-    inputState.aimVector.active = active;
+  bindJoystick(aimJoystick, (vector) => {
+    inputState.aimVector.x = vector.x;
+    inputState.aimVector.y = vector.y;
+    inputState.aimVector.active = Math.hypot(vector.x, vector.y) > 0.05;
   });
 
-  bindButton(mobileFire, () => {
-    inputState.fire = true;
-  }, () => {
-    inputState.fire = false;
-  });
+  bindButton(
+    mobileFire,
+    () => {
+      inputState.fire = true;
+    },
+    () => {
+      inputState.fire = false;
+    },
+  );
 
-  bindButton(mobileShield, () => {
-    inputState.shield = true;
-    inputState.fire = false;
-  }, () => {
-    inputState.shield = false;
-  });
+  bindButton(
+    mobileShield,
+    () => {
+      inputState.shield = true;
+      inputState.fire = false;
+    },
+    () => {
+      inputState.shield = false;
+    },
+  );
 
   bindButton(mobileDash, () => {
     inputState.dashRequested = true;
@@ -1000,35 +624,6 @@ window.addEventListener('resize', () => {
   }
 });
 
-async function startOnlineGame() {
-  if (!state.selectedRoomId) {
-    notifier.warning('Сначала выберите комнату или создайте новую арену.');
-    return;
-  }
-  const wsBaseUrl = getWsBaseUrl();
-  if (!wsBaseUrl) {
-    notifier.warning('Укажите URL туннеля сервера, чтобы подключиться.');
-    return;
-  }
-  stopCurrentGame();
-  toggleView(true);
-  ui.reset();
-  state.currentMode = 'online';
-  const name = sanitizeName(playerNameInput.value || '');
-  const game = new OnlineGame({ canvas, inputState, ui, wsBaseUrl });
-  state.currentGame = game;
-  try {
-    await game.start({ roomId: state.selectedRoomId, playerName: name });
-    ui.setMode('online', state.selectedRoomName || state.selectedRoomId);
-    const roomTitle = state.selectedRoomName || state.selectedRoomElement?.querySelector('.room-card__title')?.textContent?.trim();
-    notifier.success(`Вы подключены к комнате ${roomTitle ? `«${roomTitle}»` : state.selectedRoomId}.`, { timeout: 5200 });
-  } catch (error) {
-    console.error('Online game failed', error);
-    ui.setStatus('Ошибка подключения', 'error');
-    notifier.error('Не удалось подключиться к комнате. Попробуйте позже.', { timeout: 6000 });
-  }
-}
-
 function startOfflineGame() {
   stopCurrentGame();
   toggleView(true);
@@ -1059,23 +654,9 @@ function returnToLobby() {
   notifier.info('Вы вернулись в лобби.', { timeout: 3200 });
 }
 
-async function waitForRuntimeConfig() {
-  const ready = window.__crosslineConfigReady;
-  if (ready && typeof ready.then === 'function') {
-    try {
-      await ready;
-    } catch (error) {
-      console.warn('Runtime config detection failed', error);
-    }
-  }
-}
-
 async function init() {
   attachInputListeners();
   attachMobileControls();
-  refreshRoomsBtn.addEventListener('click', loadRooms);
-  createRoomForm.addEventListener('submit', handleCreateRoom);
-  playOnlineBtn.addEventListener('click', startOnlineGame);
   playOfflineBtn.addEventListener('click', startOfflineGame);
   leaveGameBtn.addEventListener('click', returnToLobby);
   respawnBtn.addEventListener('click', () => {
@@ -1104,9 +685,8 @@ async function init() {
       }
     });
   }
-  updateJoinButton();
-  await waitForRuntimeConfig();
-  await loadRooms();
+  ui.reset();
+  notifier.info('Онлайн-сервер отключён. Играйте офлайн!', { timeout: 5200 });
 }
 
 init().catch((error) => {

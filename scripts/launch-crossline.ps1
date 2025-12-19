@@ -1,8 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$ProjectDir,
-    [int]$Port = 3000,
-    [int]$TunnelTimeoutSeconds = 120
+    [int]$Port = 3000
 )
 
 Set-StrictMode -Version 3.0
@@ -25,24 +24,6 @@ function Require-Command {
     if (-not (Get-Command -Name $Name -ErrorAction SilentlyContinue)) {
         throw "$FriendlyName ($Name) was not found in PATH."
     }
-}
-
-function Resolve-Ngrok {
-    if ($env:NGROK_EXE) {
-        $candidate = $env:NGROK_EXE
-        if (Test-Path -Path $candidate) {
-            return (Resolve-Path -Path $candidate).ProviderPath
-        }
-
-        Write-Warning "NGROK_EXE points to a missing file: $candidate"
-    }
-
-    $command = Get-Command -Name 'ngrok' -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Path
-    }
-
-    throw 'ngrok was not found. Install it, add it to PATH, or set NGROK_EXE.'
 }
 
 function Get-PackageManifest {
@@ -151,19 +132,7 @@ function Get-MissingPackages {
 
 Require-Command -Name 'node' -FriendlyName 'Node.js'
 Require-Command -Name 'npm'
-$ngrokExe = Resolve-Ngrok
-Write-Host "[INFO] Using ngrok: $ngrokExe"
-
-if ($env:NGROK_AUTHTOKEN) {
-    try {
-        & $ngrokExe config add-authtoken $env:NGROK_AUTHTOKEN | Out-Null
-        Write-Host '[INFO] Applied NGROK_AUTHTOKEN.'
-    } catch {
-        Write-Warning "Failed to apply NGROK_AUTHTOKEN: $($_.Exception.Message)"
-    }
-} else {
-    Write-Warning 'NGROK_AUTHTOKEN is not set. Authorise ngrok manually if required.'
-}
+Require-Command -Name 'cloudflared' -FriendlyName 'Cloudflare Tunnel'
 
 $nodeModules = Join-Path -Path $resolvedProjectDir -ChildPath 'node_modules'
 $manifest = Get-PackageManifest -ProjectDir $resolvedProjectDir
@@ -221,20 +190,19 @@ $serverArgs = @(
 Write-Host "[STEP] Starting local server on http://localhost:$Port ..."
 $serverProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList $serverArgs -WorkingDirectory $resolvedProjectDir -PassThru -WindowStyle Normal
 
-$ngrokArgs = @(
-    '/k',
-    "title Crossline Ngrok `& `"$ngrokExe`" http $Port --host-header=localhost:$Port"
-)
-Write-Host '[STEP] Starting ngrok tunnel...'
-$ngrokProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList $ngrokArgs -WorkingDirectory $resolvedProjectDir -PassThru -WindowStyle Normal
-
-Write-Host "[INFO] Waiting for ngrok public URL (timeout: $TunnelTimeoutSeconds s)..."
 $updateScript = Join-Path -Path $resolvedProjectDir -ChildPath 'scripts/update-runtime-config.ps1'
 if (-not (Test-Path -Path $updateScript)) {
     throw "Missing script: $updateScript"
 }
 
-$tunnelInfoLines = & $updateScript -ProjectDir $resolvedProjectDir -TimeoutSeconds $TunnelTimeoutSeconds
+$cloudflaredArgs = @(
+    '/k',
+    'title Crossline Tunnel `& cloudflared tunnel run irgri-tunnel'
+)
+Write-Host '[STEP] Starting Cloudflare tunnel (irgri-tunnel)...'
+$tunnelProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList $cloudflaredArgs -WorkingDirectory $resolvedProjectDir -PassThru -WindowStyle Normal
+
+$tunnelInfoLines = & $updateScript -ProjectDir $resolvedProjectDir
 
 $tunnelInfo = @{}
 foreach ($line in $tunnelInfoLines) {
@@ -246,7 +214,7 @@ foreach ($line in $tunnelInfoLines) {
 }
 
 if (-not $tunnelInfo.ContainsKey('TUNNEL_URL')) {
-    throw 'Runtime config updater did not return a public ngrok URL.'
+    throw 'Runtime config updater did not return the public tunnel URL.'
 }
 
 $publicUrl = $tunnelInfo['TUNNEL_URL']
