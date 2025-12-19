@@ -1,5 +1,5 @@
 @echo off
-setlocal enableextensions enabledelayedexpansion
+setlocal enableextensions
 chcp 65001 >nul 2>&1
 
 rem ===== ROOT PATH =====
@@ -45,11 +45,11 @@ if exist "%ROOT%\package-lock.json" (
 
 echo.
 echo [STEP] Запускаем игровой сервер на http://localhost:%PORT% ...
-set "SERVER_CMD=pushd \"%ROOT%\" ^&^& set PORT=%PORT% ^&^& set CROSSLINE_CLUSTER=0 ^&^& set CROSSLINE_CLUSTER_WORKERS=1 ^&^& node server\\index.js ^|^| (echo [ERROR] Сервер завершился с кодом !errorlevel! ^& pause)"
+set "SERVER_CMD=pushd ""%ROOT%"" ^&^& set PORT=%PORT% ^&^& set CROSSLINE_CLUSTER=0 ^&^& set CROSSLINE_CLUSTER_WORKERS=1 ^&^& node server\index.js ^|^| (echo [ERROR] Сервер завершился с кодом !errorlevel! ^& pause)"
 call :launch_window "Crossline Server" "%SERVER_CMD%" || goto :FAIL
 
 echo [STEP] Запускаем cloudflared tunnel (irgri-tunnel)...
-set "TUNNEL_CMD=pushd \"%ROOT%\" ^&^& cloudflared --config \"%CLOUDFLARE_CONFIG%\" tunnel run irgri-tunnel ^|^| (echo [ERROR] Cloudflared завершился с кодом !errorlevel! ^& pause)"
+set "TUNNEL_CMD=pushd ""%ROOT%"" ^&^& cloudflared --config ""%CLOUDFLARE_CONFIG%"" tunnel run irgri-tunnel ^|^| (echo [ERROR] Cloudflared завершился с кодом !errorlevel! ^& pause)"
 call :launch_window "Crossline Tunnel" "%TUNNEL_CMD%" || goto :FAIL
 
 echo.
@@ -72,7 +72,7 @@ setlocal enabledelayedexpansion
 set "WINDOW_TITLE=%~1"
 set "RUN_COMMAND=%~2"
 echo [INFO] Открываем окно: !WINDOW_TITLE!
-start "!WINDOW_TITLE!" cmd /k "!RUN_COMMAND!"
+start "!WINDOW_TITLE!" cmd /v:on /k "!RUN_COMMAND!"
 set "EXIT_CODE=%ERRORLEVEL%"
 endlocal & exit /b %EXIT_CODE%
 
