@@ -11,6 +11,8 @@ if "%PORT%"=="" set "PORT=3000"
 set "CROSSLINE_API_URL=https://irgri.uk"
 set "CROSSLINE_WS_URL=wss://irgri.uk"
 if "%CLOUDFLARE_CONFIG%"=="" set "CLOUDFLARE_CONFIG=%USERPROFILE%\.cloudflared\config.yml"
+set "CROSSLINE_CLUSTER=0"
+set "CROSSLINE_CLUSTER_WORKERS=1"
 
 rem ===== HEADER =====
 echo ==============================================
@@ -34,16 +36,16 @@ if not exist "%CLOUDFLARE_CONFIG%" (
 )
 
 rem ===== DEPENDENCIES =====
-if not exist "%ROOT%\node_modules" (
-  echo [STEP] Устанавливаем зависимости (npm ci)...
+echo [STEP] Устанавливаем зависимости (npm ci / npm install)...
+if exist "%ROOT%\package-lock.json" (
   call npm ci || goto :FAIL
 ) else (
-  echo [INFO] Зависимости уже установлены.
+  call npm install || goto :FAIL
 )
 
 echo.
 echo [STEP] Запускаем игровой сервер на http://localhost:%PORT% ...
-set "SERVER_CMD=pushd \"%ROOT%\" ^&^& set PORT=%PORT% ^&^& node server\\index.js ^|^| (echo [ERROR] Сервер завершился с кодом !errorlevel! ^& pause)"
+set "SERVER_CMD=pushd \"%ROOT%\" ^&^& set PORT=%PORT% ^&^& set CROSSLINE_CLUSTER=0 ^&^& set CROSSLINE_CLUSTER_WORKERS=1 ^&^& node server\\index.js ^|^| (echo [ERROR] Сервер завершился с кодом !errorlevel! ^& pause)"
 call :launch_window "Crossline Server" "%SERVER_CMD%" || goto :FAIL
 
 echo [STEP] Запускаем cloudflared tunnel (irgri-tunnel)...

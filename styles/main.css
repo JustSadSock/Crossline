@@ -539,6 +539,48 @@ body {
   margin-top: 0.4rem;
 }
 
+.debug-panel {
+  margin-top: 0.6rem;
+  padding: 0.8rem 1rem 0.6rem;
+  background: rgba(12, 18, 34, 0.68);
+  border: 1px dashed rgba(77, 246, 255, 0.35);
+  border-radius: 14px;
+  color: var(--text-dim);
+}
+
+.debug-panel summary {
+  cursor: pointer;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.debug-panel__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.4rem;
+}
+
+.debug-panel__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  font-size: 0.9rem;
+}
+
+.debug-panel__label {
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+
+.debug-panel__value {
+  font-family: 'Roboto Mono', monospace;
+  color: var(--text-primary);
+  text-align: right;
+  word-break: break-all;
+}
+
 .mode-card__controls {
   display: flex;
   align-items: center;

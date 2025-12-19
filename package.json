@@ -5,10 +5,16 @@
   "main": "index.html",
   "scripts": {
     "test": "echo \"No automated tests configured\"",
-    "build": "echo 'Static build step not required'"
+    "build": "echo 'Static build step not required'",
+    "server": "node server/index.js",
+    "dev": "npm run server"
   },
   "keywords": ["game", "shooter", "browser"],
   "author": "",
   "license": "ISC",
-  "dependencies": {}
+  "dependencies": {
+    "pino": "^9.4.0",
+    "prom-client": "^14.2.0",
+    "ws": "^8.17.1"
+  }
 }

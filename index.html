@@ -67,6 +67,31 @@
             </div>
           </div>
           <div id="room-list" class="room-list" role="list"></div>
+          <details id="debug-panel" class="debug-panel">
+            <summary>Отладка подключения</summary>
+            <div class="debug-panel__grid">
+              <div class="debug-panel__row">
+                <span class="debug-panel__label">API</span>
+                <span id="debug-api-origin" class="debug-panel__value">—</span>
+              </div>
+              <div class="debug-panel__row">
+                <span class="debug-panel__label">WS</span>
+                <span id="debug-ws-origin" class="debug-panel__value">—</span>
+              </div>
+              <div class="debug-panel__row">
+                <span class="debug-panel__label">Статус</span>
+                <span id="debug-status" class="debug-panel__value">offline</span>
+              </div>
+              <div class="debug-panel__row">
+                <span class="debug-panel__label">/health</span>
+                <span id="debug-health" class="debug-panel__value">—</span>
+              </div>
+              <div class="debug-panel__row">
+                <span class="debug-panel__label">Последняя ошибка</span>
+                <span id="debug-last-error" class="debug-panel__value">—</span>
+              </div>
+            </div>
+          </details>
         </div>
       </section>
     </section>

@@ -58,18 +58,15 @@ function resolveWorkerCount(cpuCount) {
       return parsed;
     }
   }
-  return cpuCount;
+  return 1;
 }
 
 function resolveClusterEnabled(workerCount) {
   const flag = parseBoolean(process.env.CROSSLINE_CLUSTER);
-  if (flag === false) {
-    return false;
-  }
   if (flag === true) {
     return workerCount > 1;
   }
-  return workerCount > 1;
+  return false;
 }
 
 function parseOriginList(value) {

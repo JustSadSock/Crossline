@@ -35,9 +35,20 @@ const roomNameInput = document.getElementById('room-name');
 const createRoomBtn = document.getElementById('create-room');
 const refreshRoomsBtn = document.getElementById('refresh-rooms');
 const joinOnlineBtn = document.getElementById('join-online');
+const debugPanel = document.getElementById('debug-panel');
+const debugApiOrigin = document.getElementById('debug-api-origin');
+const debugWsOrigin = document.getElementById('debug-ws-origin');
+const debugStatus = document.getElementById('debug-status');
+const debugLastError = document.getElementById('debug-last-error');
+const debugHealth = document.getElementById('debug-health');
 
 const DEFAULT_API_ORIGIN = 'https://irgri.uk';
 const DEFAULT_WS_ORIGIN = 'wss://irgri.uk';
+const HEALTH_TIMEOUT_MS = 6000;
+const HEALTH_RETRY_BASE_MS = 4000;
+const HEALTH_SUCCESS_POLL_MS = 20000;
+const HEALTH_RETRY_MAX_MS = 30000;
+const WS_RECONNECT_MAX_MS = 10000;
 
 const SHIELD_KEY_CODES = new Set(['ShiftLeft', 'ShiftRight']);
 const SHIELD_KEY_FALLBACKS = new Set(['q', 'e']);
@@ -69,6 +80,12 @@ const onlineState = {
   selectedRoomId: null,
   apiOrigin: '',
   wsOrigin: '',
+  lastError: null,
+  lastHealthStatus: '',
+  healthTimer: null,
+  wsState: 'idle',
+  lastWsEvent: null,
+  wasEverAvailable: false,
 };
 
 const dashChargeElements = dashCharges ? Array.from(dashCharges.querySelectorAll('.hud__charge')) : [];
@@ -690,6 +707,9 @@ function stopCurrentGame() {
   if (state.currentGame && typeof state.currentGame.stop === 'function') {
     state.currentGame.stop();
   }
+  if (state.currentGame instanceof OnlineGame) {
+    setWsState('idle');
+  }
   state.currentGame = null;
   state.currentMode = null;
   resetInputState();
@@ -768,39 +788,145 @@ function renderRoomList() {
   });
 }
 
+function describeError(error) {
+  if (!error) return 'неизвестно';
+  if (error.type === 'http') {
+    return `HTTP ${error.status}${error.statusText ? ` ${error.statusText}` : ''}`.trim();
+  }
+  if (error.type === 'network') {
+    if (error.message === 'timeout') return 'таймаут';
+    return error.message || 'network error';
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return 'ошибка';
+}
+
+function registerError(source, error) {
+  onlineState.lastError = {
+    source,
+    message: describeError(error),
+    at: Date.now(),
+  };
+  updateDebugPanel();
+}
+
+function fetchWithTimeout(url, { timeoutMs, ...options }) {
+  const controller = new AbortController();
+  const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const mergedOptions = { ...options, signal: controller.signal };
+  return fetch(url, mergedOptions)
+    .catch((error) => {
+      if (controller.signal.aborted || error.name === 'AbortError') {
+        const timeoutError = new Error('timeout');
+        timeoutError.type = 'network';
+        throw timeoutError;
+      }
+      const networkError = new Error(error.message || 'network error');
+      networkError.type = 'network';
+      throw networkError;
+    })
+    .finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+}
+
 async function fetchJson(path, options = {}) {
   const apiOrigin = onlineState.apiOrigin || resolveApiOrigin();
   const url = `${apiOrigin}${path}`;
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-  return fetch(url, { cache: 'no-store', ...options, headers });
+  const response = await fetchWithTimeout(url, { cache: 'no-store', ...options, headers, timeoutMs: options.timeoutMs });
+  const contentType = (response.headers && response.headers.get('content-type')) || '';
+  let data = null;
+  if (contentType.includes('application/json')) {
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      data = null;
+    }
+  }
+  if (!response.ok) {
+    const error = new Error('HTTP error');
+    error.type = 'http';
+    error.status = response.status;
+    error.statusText = response.statusText || '';
+    error.data = data;
+    throw error;
+  }
+  return { data, response };
 }
 
-async function checkServerAvailability() {
+function updateDebugPanel() {
+  if (!debugPanel) return;
+  if (debugApiOrigin) {
+    debugApiOrigin.textContent = onlineState.apiOrigin || resolveApiOrigin();
+  }
+  if (debugWsOrigin) {
+    debugWsOrigin.textContent = onlineState.wsOrigin || resolveWsOrigin();
+  }
+  if (debugStatus) {
+    const wsLabel = onlineState.wsState ? ` / ws: ${onlineState.wsState}` : '';
+    debugStatus.textContent = `${onlineState.available ? 'online' : 'offline'}${wsLabel}`;
+  }
+  if (debugHealth) {
+    debugHealth.textContent = onlineState.lastHealthStatus || '—';
+  }
+  if (debugLastError) {
+    debugLastError.textContent = onlineState.lastError ? `${onlineState.lastError.source}: ${onlineState.lastError.message}` : '—';
+  }
+}
+
+function scheduleHealthCheck(delayMs, attempt) {
+  if (onlineState.healthTimer) {
+    clearTimeout(onlineState.healthTimer);
+  }
+  onlineState.healthTimer = setTimeout(() => {
+    runHealthCheck(attempt);
+  }, delayMs);
+}
+
+async function runHealthCheck(attempt = 0) {
   onlineState.apiOrigin = resolveApiOrigin();
   onlineState.wsOrigin = resolveWsOrigin();
   setOnlinePill('поиск сервера…', 'neutral');
+  updateDebugPanel();
   try {
-    const response = await fetchJson('/health');
-    if (!response.ok) {
-      throw new Error('Healthcheck failed');
-    }
-    const payload = await response.json();
-    if (!payload || payload.status !== 'ok') {
-      throw new Error('Invalid health payload');
+    const { data, response } = await fetchJson('/health', { timeoutMs: HEALTH_TIMEOUT_MS });
+    if (!data || data.status !== 'ok') {
+      const invalidError = new Error('Неверный ответ /health');
+      invalidError.type = 'network';
+      throw invalidError;
     }
     onlineState.available = true;
+    onlineState.lastHealthStatus = `HTTP ${response.status} ${response.statusText || ''}`.trim();
+    if (!onlineState.wasEverAvailable) {
+      notifier.success('Сервер найден: irgri.uk', { timeout: 3200 });
+    }
+    onlineState.lastError = null;
+    onlineState.wasEverAvailable = true;
     setOnlinePill('сервер онлайн', 'success');
-    notifier.success('Сервер найден: irgri.uk', { timeout: 3200 });
+    renderRoomList();
     await loadRooms();
+    setRoomControlsDisabled(false);
+    updateDebugPanel();
+    scheduleHealthCheck(HEALTH_SUCCESS_POLL_MS, 0);
+    return;
   } catch (error) {
     onlineState.available = false;
     onlineState.rooms = [];
     onlineState.selectedRoomId = null;
-    setOnlinePill('сервер недоступен', 'error');
+    onlineState.lastHealthStatus = '—';
+    registerError('health', error);
+    setOnlinePill(`нет связи (${describeError(error)})`, 'error');
     renderRoomList();
-    notifier.warning('Сервер не отвечает. Можно играть офлайн.', { timeout: 5200 });
+    setRoomControlsDisabled(true);
+    if (onlineState.wasEverAvailable) {
+      notifier.warning('Сервер перестал отвечать. Можно играть офлайн.', { timeout: 5200 });
+    }
+    const nextDelay = Math.min(HEALTH_RETRY_BASE_MS * Math.max(1, attempt + 1), HEALTH_RETRY_MAX_MS);
+    scheduleHealthCheck(nextDelay, Math.min(attempt + 1, 5));
   }
-  setRoomControlsDisabled(!onlineState.available || onlineState.loading);
 }
 
 async function loadRooms() {
@@ -811,18 +937,15 @@ async function loadRooms() {
   onlineState.loading = true;
   setRoomControlsDisabled(true);
   try {
-    const response = await fetchJson('/rooms');
-    if (!response.ok) {
-      throw new Error('Failed to load rooms');
-    }
-    const rooms = await response.json();
-    onlineState.rooms = Array.isArray(rooms) ? rooms : [];
+    const { data } = await fetchJson('/rooms', { timeoutMs: HEALTH_TIMEOUT_MS });
+    onlineState.rooms = Array.isArray(data) ? data : [];
     if (!onlineState.rooms.some((room) => room.id === onlineState.selectedRoomId)) {
       onlineState.selectedRoomId = onlineState.rooms[0] ? onlineState.rooms[0].id : null;
     }
     renderRoomList();
   } catch (error) {
-    notifier.error('Не удалось получить список комнат.', { timeout: 3600 });
+    registerError('rooms', error);
+    notifier.error(`Не удалось получить список комнат (${describeError(error)}).`, { timeout: 4200 });
   } finally {
     onlineState.loading = false;
     setRoomControlsDisabled(false);
@@ -836,26 +959,33 @@ async function createRoom() {
   onlineState.loading = true;
   setRoomControlsDisabled(true);
   try {
-    const response = await fetchJson('/rooms', {
+    const { data } = await fetchJson('/rooms', {
       method: 'POST',
       body: JSON.stringify({ name }),
+      timeoutMs: HEALTH_TIMEOUT_MS,
     });
-    if (!response.ok) {
-      throw new Error('Room create failed');
-    }
-    const room = await response.json();
+    const room = data || {};
     notifier.success(`Комната «${room.name || name}» создана.`, { timeout: 3600 });
     if (roomNameInput) {
       roomNameInput.value = '';
     }
-    onlineState.selectedRoomId = room.id;
+    onlineState.selectedRoomId = room.id || null;
     await loadRooms();
   } catch (error) {
-    notifier.error('Не удалось создать комнату.', { timeout: 3200 });
+    registerError('rooms', error);
+    notifier.error(`Не удалось создать комнату (${describeError(error)}).`, { timeout: 3600 });
   } finally {
     onlineState.loading = false;
     setRoomControlsDisabled(false);
   }
+}
+
+function setWsState(stateName, event) {
+  onlineState.wsState = stateName;
+  if (event) {
+    onlineState.lastWsEvent = { ...event, at: Date.now() };
+  }
+  updateDebugPanel();
 }
 
 async function startOnlineGame() {
@@ -868,19 +998,29 @@ async function startOnlineGame() {
   const room = onlineState.rooms.find((entry) => entry.id === onlineState.selectedRoomId);
   const subtitle = room ? room.name : 'arena';
   const game = new OnlineGame({ canvas, inputState, ui, wsBaseUrl: onlineState.wsOrigin });
+  game.onConnectionEvent = (event) => {
+    setWsState(event.state || 'unknown', event);
+    if (event.type === 'close' || event.type === 'error') {
+      registerError('websocket', new Error(event.reason || 'ws closed'));
+    }
+  };
   state.currentGame = game;
   ui.setMode('online', subtitle);
   ui.setStatus('Подключение к серверу…', 'neutral');
+  setWsState('connecting');
   notifier.info('Открываем соединение с ареной…', { timeout: 2600 });
   try {
     await game.start({ roomId: onlineState.selectedRoomId, playerName });
     ui.setStatus('Связь установлена, бой начался!', 'success');
     notifier.success('Вы подключились к онлайн-арене.', { timeout: 3600 });
+    setWsState('connected');
   } catch (error) {
     console.error('Online start failed', error);
     ui.setStatus('Не удалось подключиться', 'error');
-    notifier.error('Не удалось подключиться к серверу.', { timeout: 3600 });
+    notifier.error(`Не удалось подключиться к серверу (${describeError(error)}).`, { timeout: 3600 });
+    registerError('websocket', error);
     returnToLobby();
+    setWsState('error');
   }
 }
 
@@ -926,10 +1066,7 @@ async function init() {
   }
   ui.reset();
   await (window.__crosslineConfigReady || Promise.resolve());
-  await checkServerAvailability();
-  if (!onlineState.available) {
-    notifier.info('Онлайн режим недоступен — пока можно играть офлайн.', { timeout: 5200 });
-  }
+  runHealthCheck();
 }
 
 init().catch((error) => {
