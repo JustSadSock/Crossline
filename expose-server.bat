@@ -53,7 +53,7 @@ echo.
 rem ===== START LOCAL SERVER =====
 echo [STEP] Запуск игрового сервера на http://localhost:%PORT% ...
 set "SERVER_CMD=cd /d \"%SCRIPT_DIR%\" && set PORT=%PORT% && node server\index.js"
-start "Crossline Server" cmd /k "%SERVER_CMD% || (echo [ERROR] Сервер завершился с ошибкой ^&^& pause)"
+call :launch_window "Crossline Server" "%SERVER_CMD%" "Сервер завершился с ошибкой"
 if errorlevel 1 (
   echo [ERROR] Не удалось запустить серверное окно.
   goto :FAIL
@@ -66,7 +66,7 @@ echo.
 rem ===== START CLOUDFLARE TUNNEL =====
 echo [STEP] Запуск Cloudflare Tunnel (irgri-tunnel)...
 set "TUNNEL_CMD=cd /d \"%SCRIPT_DIR%\" && %CLOUDFLARED_CMD% tunnel run irgri-tunnel"
-start "Crossline Tunnel" cmd /k "%TUNNEL_CMD% || (echo [ERROR] Cloudflared завершился с ошибкой ^&^& pause)"
+call :launch_window "Crossline Tunnel" "%TUNNEL_CMD%" "Cloudflared завершился с ошибкой"
 if errorlevel 1 (
   echo [ERROR] Не удалось запустить cloudflared.
   goto :FAIL
@@ -87,6 +87,15 @@ pause
 endlocal
 
 goto :EOF
+
+:launch_window
+setlocal
+set "WINDOW_TITLE=%~1"
+set "RUN_COMMAND=%~2"
+set "ERROR_MESSAGE=%~3"
+start "%WINDOW_TITLE%" cmd /k "%RUN_COMMAND% ^& if errorlevel 1 echo [ERROR] %ERROR_MESSAGE% (код !errorlevel!) ^& pause"
+set "EXIT_CODE=%errorlevel%"
+endlocal & exit /b %EXIT_CODE%
 
 :FAIL
 echo.

@@ -110,11 +110,15 @@ function startServer() {
       return;
     }
     const url = new URL(req.url, `http://${req.headers.host}`);
-    if (req.method === 'GET' && url.pathname === '/rooms') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/rooms') {
       const rooms = listRooms();
       res.setHeader('Content-Type', 'application/json');
       res.writeHead(200);
-      res.end(JSON.stringify(rooms));
+      if (req.method === 'HEAD') {
+        res.end();
+      } else {
+        res.end(JSON.stringify(rooms));
+      }
       return;
     }
 
@@ -142,15 +146,19 @@ function startServer() {
       return;
     }
 
-    if (req.method === 'GET' && url.pathname === '/health') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/health') {
       res.setHeader('Content-Type', 'application/json');
       res.writeHead(200);
-      res.end(
-        JSON.stringify({
-          status: 'ok',
-          metrics: monitoring.snapshot(),
-        }),
-      );
+      if (req.method === 'HEAD') {
+        res.end();
+      } else {
+        res.end(
+          JSON.stringify({
+            status: 'ok',
+            metrics: monitoring.snapshot(),
+          }),
+        );
+      }
       return;
     }
 
