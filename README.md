@@ -13,11 +13,12 @@
 ## Быстрый старт (Windows)
 1. Клонируйте репозиторий и откройте его в проводнике.
 2. Установите зависимости: в терминале/PowerShell выполните `npm install` (или `npm ci`, если не меняли `package-lock.json`).
-3. Запустите `run-server-and-tunnel.bat` из корня проекта. Скрипт:
-   - ставит зависимости,
+3. Запустите один файл `run-server-and-tunnel.bat` из корня проекта. Скрипт:
+   - ставит зависимости (`npm ci` или `npm install`),
    - выставляет `PORT=3000`, `CROSSLINE_CLUSTER=0`, `CROSSLINE_CLUSTER_WORKERS=1`,
-   - поднимает `node server/index.js` и `cloudflared tunnel run irgri-tunnel` в отдельных окнах,
-   - удерживает главное окно открытым для диагностики.
+   - запускает сервер и ждёт доступности `http://127.0.0.1:%PORT%/health` (до 30 секунд),
+   - после готовности запускает `cloudflared ... tunnel run irgri-tunnel` в отдельном окне,
+   - удерживает главное окно открытым и показывает коды выхода при ошибках.
 4. Проверьте `http://localhost:3000/health` и `http://localhost:3000/rooms` — должны вернуть JSON без ошибок.
 5. Откройте игру через `https://irgri.uk` (через туннель) или локально через `index.html`.
 
