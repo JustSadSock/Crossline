@@ -12,6 +12,8 @@ const WEAPON_HEAT_PER_SHOT = 0.28;
 const WEAPON_HEAT_COOLDOWN_RATE = 0.0005;
 const WEAPON_OVERHEAT_PENALTY_MS = 1200;
 const WEAPON_HEAT_SAFE_RATIO = 0.45;
+const WS_RECONNECT_BASE_MS = 900;
+const WS_RECONNECT_MAX_MS = 10000;
 
 const PLAYER_FIELD_FLAGS = {
   POSITION: 1 << 0,
@@ -103,10 +105,18 @@ export class OnlineGame {
     this.weaponOverheated = false;
     this.weaponRecoveredAt = 0;
     this._startHandlers = null;
+    this.onConnectionEvent = null;
+    this.reconnectAttempts = 0;
+    this.reconnectTimer = null;
+    this.shouldReconnect = false;
+    this.playerName = '';
   }
 
   start({ roomId, playerName }) {
     this.roomId = roomId;
+    this.playerName = playerName;
+    this.shouldReconnect = true;
+    this.reconnectAttempts = 0;
     this.players = {};
     this.bullets = new Map();
     this.lastSent = { x: null, y: null, angle: null };
@@ -120,48 +130,109 @@ export class OnlineGame {
     this.weaponOverheated = false;
     this.weaponRecoveredAt = 0;
     this.lastFrameTime = 0;
+    this.pauseForReconnect();
     return new Promise((resolve, reject) => {
-      // Use configured wsBaseUrl if provided, otherwise use current host
-      let wsUrl;
-      if (this.wsBaseUrl) {
-        wsUrl = `${this.wsBaseUrl}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
-      } else {
-        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        wsUrl = `${protocol}//${window.location.host}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
-      }
-      this.ws = new WebSocket(wsUrl);
-      this.ws.binaryType = 'arraybuffer';
       this._startHandlers = { resolve, reject, settled: false };
-
-      this.ws.addEventListener('open', () => {
-        this.ui.setStatus('Соединение установлено', 'success');
-      });
-
-      this.ws.addEventListener('message', (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          this.handleBinaryMessage(event.data);
-        } else if (typeof Blob !== 'undefined' && event.data instanceof Blob) {
-          event.data.arrayBuffer().then((buffer) => this.handleBinaryMessage(buffer));
-        } else if (typeof event.data === 'string') {
-          this.handleLegacyMessage(event.data);
-        }
-      });
-
-      this.ws.addEventListener('close', () => {
-        this.rejectStart(new Error('Соединение закрыто'));
-        this.ui.setStatus('Соединение закрыто', 'error');
-        this.stop();
-      });
-
-      this.ws.addEventListener('error', (error) => {
-        console.error('WebSocket error', error);
-        this.rejectStart(error);
-        this.ui.setStatus('Ошибка сети', 'error');
-      });
+      this.openWebSocket();
     });
   }
 
+  buildWebSocketUrl() {
+    if (this.wsBaseUrl) {
+      return `${this.wsBaseUrl}/?room=${encodeURIComponent(this.roomId)}&name=${encodeURIComponent(this.playerName)}`;
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${protocol}//${window.location.host}/?room=${encodeURIComponent(this.roomId)}&name=${encodeURIComponent(this.playerName)}`;
+  }
+
+  openWebSocket(isReconnect = false) {
+    if (!this.roomId) {
+      this.rejectStart(new Error('room not set'));
+      return;
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.close();
+    }
+
+    const wsUrl = this.buildWebSocketUrl();
+    this.notifyConnection({ type: isReconnect ? 'reconnect-attempt' : 'connect', state: isReconnect ? 'reconnecting' : 'connecting', url: wsUrl, attempt: this.reconnectAttempts });
+    this.ws = new WebSocket(wsUrl);
+    this.ws.binaryType = 'arraybuffer';
+
+    this.ws.addEventListener('open', () => {
+      this.reconnectAttempts = 0;
+      this.notifyConnection({ type: 'open', state: 'connected' });
+      this.ui.setStatus('Соединение установлено', 'success');
+    });
+
+    this.ws.addEventListener('message', (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        this.handleBinaryMessage(event.data);
+      } else if (typeof Blob !== 'undefined' && event.data instanceof Blob) {
+        event.data.arrayBuffer().then((buffer) => this.handleBinaryMessage(buffer));
+      } else if (typeof event.data === 'string') {
+        this.handleLegacyMessage(event.data);
+      }
+    });
+
+    this.ws.addEventListener('close', (event) => {
+      const reason = event && event.code ? `code ${event.code}` : 'Соединение закрыто';
+      this.notifyConnection({ type: 'close', state: 'closed', reason, code: event && event.code });
+      const startRejected = this.rejectStart(new Error(reason));
+      if (this.shouldReconnect && !startRejected) {
+        this.pauseForReconnect();
+        this.ui.setStatus('Соединение потеряно, переподключаемся…', 'error');
+        this.scheduleReconnect();
+        return;
+      }
+      this.ui.setStatus('Соединение закрыто', 'error');
+      this.stop();
+    });
+
+    this.ws.addEventListener('error', (error) => {
+      console.error('WebSocket error', error);
+      this.notifyConnection({ type: 'error', state: 'error', reason: error && error.message });
+      if (!this.rejectStart(error)) {
+        this.ui.setStatus('Ошибка сети', 'error');
+      }
+    });
+  }
+
+  scheduleReconnect() {
+    if (!this.shouldReconnect) return;
+    const delay = Math.min(WS_RECONNECT_BASE_MS * Math.max(1, 2 ** this.reconnectAttempts), WS_RECONNECT_MAX_MS);
+    this.reconnectAttempts += 1;
+    this.notifyConnection({ type: 'reconnect-scheduled', state: 'reconnecting', delay });
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+    this.reconnectTimer = setTimeout(() => this.openWebSocket(true), delay);
+  }
+
+  pauseForReconnect() {
+    this.running = false;
+    if (this.animationId) {
+      cancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.close();
+    }
+    this.ws = null;
+  }
+
+  notifyConnection(event) {
+    if (typeof this.onConnectionEvent === 'function') {
+      this.onConnectionEvent(event);
+    }
+  }
+
   stop() {
+    this.shouldReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.running = false;
     if (this.animationId) {
       cancelAnimationFrame(this.animationId);
