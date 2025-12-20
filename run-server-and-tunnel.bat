@@ -1,84 +1,69 @@
 @echo off
-setlocal enableextensions
 chcp 65001 >nul 2>&1
+cd /d "%~dp0" || exit /b 1
 
-rem ===== ROOT PATH =====
-for %%I in ("%~dp0.") do set "ROOT=%%~fI"
-pushd "%ROOT%" || goto :FAIL
-
-rem ===== CONFIGURATION =====
+setlocal
+set "ROOT=%~dp0"
+set "PORT=%PORT%"
 if "%PORT%"=="" set "PORT=3000"
+
 set "CROSSLINE_API_URL=https://irgri.uk"
 set "CROSSLINE_WS_URL=wss://irgri.uk"
-if "%CLOUDFLARE_CONFIG%"=="" set "CLOUDFLARE_CONFIG=%USERPROFILE%\.cloudflared\config.yml"
-set "CROSSLINE_CLUSTER=0"
-set "CROSSLINE_CLUSTER_WORKERS=1"
+set "ENV_FILE=%ROOT%scripts\.crossline-tunnel.env"
+if not exist "%ROOT%scripts" mkdir "%ROOT%scripts" >nul 2>&1
+(
+  echo CROSSLINE_API_URL=%CROSSLINE_API_URL%
+  echo CROSSLINE_WS_URL=%CROSSLINE_WS_URL%
+) > "%ENV_FILE%"
 
-rem ===== HEADER =====
 echo ==============================================
-echo   Crossline // local server + tunnel
+echo   Crossline // launcher
 echo ==============================================
-echo [INFO] Порт сервера: %PORT%
-echo [INFO] Публичный адрес: https://irgri.uk
-echo [INFO] Конфиг cloudflared: %CLOUDFLARE_CONFIG%
-echo.
+echo [INFO] ROOT=%ROOT%
+echo [INFO] PORT=%PORT%
+echo [INFO] API=%CROSSLINE_API_URL%
+echo [INFO] WS=%CROSSLINE_WS_URL%
+echo [INFO] ENV FILE=%ENV_FILE%
 
-rem ===== TOOLCHAIN CHECK =====
-call :ensure_tool node "Node.js" || goto :FAIL
-call :ensure_tool npm "npm" || goto :FAIL
-call :ensure_tool cloudflared "cloudflared" || goto :FAIL
+where node >nul 2>&1 || (echo [ERROR] Node.js (node) не найден. Установите Node.js и перезапустите. & goto FAIL)
+where npm >nul 2>&1 || (echo [ERROR] npm не найден. Установите Node.js и перезапустите. & goto FAIL)
+where cloudflared >nul 2>&1 || (echo [ERROR] cloudflared не найден. Установите Cloudflare Tunnel и перезапустите. & goto FAIL)
 
-rem ===== CLOUDFLARED CONFIG CHECK =====
-if not exist "%CLOUDFLARE_CONFIG%" (
-  echo [ERROR] Не найден конфиг cloudflared: %CLOUDFLARE_CONFIG%
-  echo         Проверьте путь или укажите его через переменную CLOUDFLARE_CONFIG.
-  goto :FAIL
-)
-
-rem ===== DEPENDENCIES =====
-echo [STEP] Устанавливаем зависимости (npm ci / npm install)...
-if exist "%ROOT%\package-lock.json" (
-  call npm ci || goto :FAIL
+echo [STEP] Устанавливаем зависимости...
+if exist "%ROOT%package-lock.json" (
+  npm ci || goto FAIL
 ) else (
-  call npm install || goto :FAIL
+  npm install || goto FAIL
 )
 
-echo.
-echo [STEP] Запускаем игровой сервер на http://localhost:%PORT% ...
-set "SERVER_CMD=pushd ""%ROOT%"" ^&^& set PORT=%PORT% ^&^& set CROSSLINE_CLUSTER=0 ^&^& set CROSSLINE_CLUSTER_WORKERS=1 ^&^& node server\index.js ^|^| (echo [ERROR] Сервер завершился с кодом !errorlevel! ^& pause)"
-call :launch_window "Crossline Server" "%SERVER_CMD%" || goto :FAIL
+set "CF_CONFIG_DEFAULT=%USERPROFILE%\.cloudflared\config.yml"
+if exist "%CF_CONFIG_DEFAULT%" (
+  findstr /c:"service: http://localhost:3000" "%CF_CONFIG_DEFAULT%" >nul 2>&1
+  if not errorlevel 1 (
+    echo [WARN] В %CF_CONFIG_DEFAULT% обнаружен service: http://localhost:3000
+    echo [WARN] На Windows предпочтительнее service: http://127.0.0.1:3000, чтобы избежать IPv6 (::1).
+  )
+)
 
-echo [STEP] Запускаем cloudflared tunnel (irgri-tunnel)...
-set "TUNNEL_CMD=pushd ""%ROOT%"" ^&^& cloudflared --config ""%CLOUDFLARE_CONFIG%"" tunnel run irgri-tunnel ^|^| (echo [ERROR] Cloudflared завершился с кодом !errorlevel! ^& pause)"
-call :launch_window "Crossline Tunnel" "%TUNNEL_CMD%" || goto :FAIL
+echo [STEP] Запускаем сервер...
+start "Crossline Server" cmd /k call "%ROOT%run-server.bat"
+
+timeout /t 2 /nobreak >nul
+
+echo [STEP] Запускаем tunnel...
+start "Crossline Tunnel" cmd /k call "%ROOT%run-tunnel.bat"
 
 echo.
-echo [READY] Сервер и туннель запущены в отдельных окнах.
+echo [READY] Открыты окна "Crossline Server" и "Crossline Tunnel".
 echo [INFO] Клиент ищет сервер по https://irgri.uk
 
-echo [HOLD] Это окно не закроется. Нажмите Ctrl+C, когда захотите завершить работу.
 :WAIT
-timeout /t 3600 /nobreak >nul
-goto :WAIT
-
-rem ===== FUNCTIONS =====
-:ensure_tool
-where %1 >nul 2>&1 && exit /b 0
-echo [ERROR] %~2 не найден. Установите его и перезапустите.
-exit /b 1
-
-:launch_window
-setlocal enabledelayedexpansion
-set "WINDOW_TITLE=%~1"
-set "RUN_COMMAND=%~2"
-echo [INFO] Открываем окно: !WINDOW_TITLE!
-start "!WINDOW_TITLE!" cmd /v:on /k "!RUN_COMMAND!"
-set "EXIT_CODE=%ERRORLEVEL%"
-endlocal & exit /b %EXIT_CODE%
+choice /t 3600 /d Y /n >nul
+goto WAIT
 
 :FAIL
 echo.
-echo [ERROR] Не удалось запустить все процессы. Проверьте вывод выше.
+echo [ERROR] Запуск прерван. Проверьте сообщения выше.
 pause
 endlocal
 exit /b 1
