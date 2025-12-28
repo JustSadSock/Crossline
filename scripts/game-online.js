@@ -124,7 +124,8 @@ export class OnlineGame {
       // Use configured wsBaseUrl if provided, otherwise use current host
       let wsUrl;
       if (this.wsBaseUrl) {
-        wsUrl = `${this.wsBaseUrl}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
+        const sanitizedBase = this.wsBaseUrl.replace(/\/+$/, '');
+        wsUrl = `${sanitizedBase}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
       } else {
         const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         wsUrl = `${protocol}//${window.location.host}/?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(playerName)}`;
